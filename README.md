@@ -16,7 +16,7 @@ ro11y has two layers:
 
 **HTTP middleware** (optional) — framework-specific request instrumentation:
 - Tower middleware for Axum (built-in today)
-- Extracts CloudFront request IDs, generates deterministic trace IDs via BLAKE3
+- Extracts request IDs (CloudFront, `x-request-id`, or any header), generates deterministic trace IDs via BLAKE3
 - Creates request spans with method, path, status, latency
 - Emits RED metrics (request duration, count, errors)
 - W3C `traceparent` propagation for outbound requests
