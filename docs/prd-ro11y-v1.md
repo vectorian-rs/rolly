@@ -61,7 +61,7 @@ pub fn propagation_layer() -> PropagationLayer   // Outbound requests
 
 // ID generation
 pub mod trace_id {
-    pub fn generate_trace_id(cf_id: Option<&str>) -> [u8; 16]
+    pub fn generate_trace_id(request_id: Option<&str>) -> [u8; 16]
     pub fn generate_span_id() -> [u8; 8]
 }
 ```
@@ -144,7 +144,7 @@ All primitives are tested against the protobuf specification.
 
 | Source | Input | trace_id |
 |--------|-------|----------|
-| CloudFront → ALB → ECS | `x-amz-cf-id` header | `BLAKE3(cf_id)[0..16]` — deterministic |
+| CloudFront → ALB → ECS | `x-amz-cf-id` header | `BLAKE3(request_id)[0..16]` — deterministic |
 | Direct API call (no CF) | None | UUID v4 — random |
 | Empty or `"-"` | Treated as None | UUID v4 — random |
 
