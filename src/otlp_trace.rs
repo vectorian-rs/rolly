@@ -301,4 +301,59 @@ mod tests {
         encode_status(&mut buf, &status);
         assert_eq!(buf, vec![0x18, 0x01]);
     }
+
+    #[test]
+    fn encode_any_value_double_pi() {
+        let mut buf = Vec::new();
+        encode_any_value(&mut buf, &AnyValue::Double(std::f64::consts::PI));
+        // field 4, wire type 1 (fixed64) → tag = 0x21
+        assert_eq!(buf[0], 0x21);
+        let bits = u64::from_le_bytes(buf[1..9].try_into().unwrap());
+        assert_eq!(f64::from_bits(bits), std::f64::consts::PI);
+    }
+
+    #[test]
+    fn encode_any_value_bytes() {
+        let data = vec![0xDE, 0xAD, 0xBE, 0xEF];
+        let mut buf = Vec::new();
+        encode_any_value(&mut buf, &AnyValue::Bytes(data.clone()));
+        // field 7, wire type 2 → tag = (7 << 3) | 2 = 0x3A
+        assert_eq!(buf[0], 0x3A);
+        assert_eq!(buf[1], 4);
+        assert_eq!(&buf[2..6], &data);
+    }
+
+    #[test]
+    fn encode_span_with_multiple_attributes() {
+        let span = SpanData {
+            trace_id: [1; 16],
+            span_id: [2; 8],
+            parent_span_id: [0; 8],
+            name: "multi-attr".to_string(),
+            kind: SpanKind::Internal,
+            start_time_unix_nano: 100,
+            end_time_unix_nano: 200,
+            attributes: vec![
+                KeyValue {
+                    key: "key1".to_string(),
+                    value: AnyValue::String("val1".to_string()),
+                },
+                KeyValue {
+                    key: "key2".to_string(),
+                    value: AnyValue::Int(42),
+                },
+                KeyValue {
+                    key: "key3".to_string(),
+                    value: AnyValue::Bool(true),
+                },
+            ],
+            status: None,
+        };
+        let mut buf = Vec::new();
+        encode_span(&mut buf, &span);
+        assert!(buf.windows(4).any(|w| w == b"key1"));
+        assert!(buf.windows(4).any(|w| w == b"key2"));
+        assert!(buf.windows(4).any(|w| w == b"key3"));
+        assert!(buf.windows(4).any(|w| w == b"val1"));
+    }
 }

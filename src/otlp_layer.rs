@@ -155,6 +155,8 @@ pub(crate) struct OtlpLayer {
     resource_attrs: Vec<KeyValue>,
     scope_name: String,
     scope_version: String,
+    export_traces: bool,
+    export_logs: bool,
 }
 
 impl OtlpLayer {
@@ -163,6 +165,8 @@ impl OtlpLayer {
         service_name: &str,
         service_version: &str,
         environment: &str,
+        export_traces: bool,
+        export_logs: bool,
     ) -> Self {
         let resource_attrs = vec![
             KeyValue {
@@ -183,6 +187,8 @@ impl OtlpLayer {
             resource_attrs,
             scope_name: "pz-o11y".to_string(),
             scope_version: env!("CARGO_PKG_VERSION").to_string(),
+            export_traces,
+            export_logs,
         }
     }
 }
@@ -228,6 +234,10 @@ where
     }
 
     fn on_event(&self, event: &tracing::Event<'_>, ctx: Context<'_, S>) {
+        if !self.export_logs {
+            return;
+        }
+
         let mut visitor = FieldCollector::new();
         event.record(&mut visitor);
 
@@ -265,6 +275,10 @@ where
     }
 
     fn on_close(&self, id: Id, ctx: Context<'_, S>) {
+        if !self.export_traces {
+            return;
+        }
+
         let span = ctx.span(&id).expect("span not found");
         let ext = span.extensions();
 
@@ -313,15 +327,17 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::exporter::ExporterConfig;
+    use crate::exporter::{ExportMessage, ExporterConfig};
+    use tracing_subscriber::layer::SubscriberExt;
 
     #[tokio::test]
     async fn otlp_layer_constructs_without_panic() {
         let exporter = Exporter::start(ExporterConfig {
-            endpoint: "http://127.0.0.1:1".to_string(),
+            traces_url: Some("http://127.0.0.1:1/v1/traces".to_string()),
+            logs_url: Some("http://127.0.0.1:1/v1/logs".to_string()),
             channel_capacity: 64,
         });
-        let _layer = OtlpLayer::new(exporter, "test-svc", "0.0.1", "test");
+        let _layer = OtlpLayer::new(exporter, "test-svc", "0.0.1", "test", true, true);
     }
 
     #[test]
@@ -341,5 +357,233 @@ mod tests {
     #[test]
     fn hex_to_bytes_16_invalid_chars() {
         assert!(hex_to_bytes_16("zz02030405060708090a0b0c0d0e0f10").is_err());
+    }
+
+    #[tokio::test]
+    async fn layer_captures_span_and_sends_trace_on_close() {
+        let (exporter, mut rx) = Exporter::start_test();
+        let layer = OtlpLayer::new(exporter, "test-svc", "0.0.1", "test", true, true);
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let trace_id_hex = "0102030405060708090a0b0c0d0e0f10";
+        let trace_id_bytes: [u8; 16] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+
+        {
+            let span = tracing::info_span!("test-span", trace_id = trace_id_hex);
+            let _enter = span.enter();
+        }
+
+        let msg = rx.recv().await.expect("should receive trace message");
+        match msg {
+            ExportMessage::Traces(data) => {
+                assert!(
+                    data.windows(16).any(|w| w == trace_id_bytes),
+                    "trace_id not found in protobuf"
+                );
+                assert!(
+                    data.windows(9).any(|w| w == b"test-span"),
+                    "span name not found in protobuf"
+                );
+            }
+            other => panic!("expected Traces, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn layer_captures_event_and_sends_log() {
+        let (exporter, mut rx) = Exporter::start_test();
+        let layer = OtlpLayer::new(exporter, "test-svc", "0.0.1", "test", true, true);
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        tracing::info!("hello integration");
+
+        let msg = rx.recv().await.expect("should receive log message");
+        match msg {
+            ExportMessage::Logs(data) => {
+                assert!(
+                    data.windows(17).any(|w| w == b"hello integration"),
+                    "log body not found in protobuf"
+                );
+            }
+            other => panic!("expected Logs, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn layer_event_inside_span_carries_trace_context() {
+        let (exporter, mut rx) = Exporter::start_test();
+        let layer = OtlpLayer::new(exporter, "test-svc", "0.0.1", "test", true, true);
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let trace_id_hex = "aabbccdd11223344aabbccdd11223344";
+        let trace_id_bytes: [u8; 16] = [
+            0xaa, 0xbb, 0xcc, 0xdd, 0x11, 0x22, 0x33, 0x44, 0xaa, 0xbb, 0xcc, 0xdd, 0x11, 0x22,
+            0x33, 0x44,
+        ];
+
+        {
+            let span = tracing::info_span!("outer", trace_id = trace_id_hex);
+            let _enter = span.enter();
+            tracing::info!("inner event");
+        }
+
+        // First message: the log event
+        let msg = rx.recv().await.expect("should receive log");
+        match msg {
+            ExportMessage::Logs(data) => {
+                assert!(
+                    data.windows(16).any(|w| w == trace_id_bytes),
+                    "trace_id not propagated to log"
+                );
+            }
+            other => panic!("expected Logs, got {:?}", other),
+        }
+
+        // Second message: the span trace
+        let msg = rx.recv().await.expect("should receive trace");
+        assert!(matches!(msg, ExportMessage::Traces(_)));
+    }
+
+    #[tokio::test]
+    async fn field_collector_handles_all_types() {
+        let (exporter, mut rx) = Exporter::start_test();
+        let layer = OtlpLayer::new(exporter, "test-svc", "0.0.1", "test", true, true);
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        {
+            let span = tracing::info_span!(
+                "typed-span",
+                str_field = "hello",
+                i64_field = 42i64,
+                u64_field = 100u64,
+                bool_field = true,
+                f64_field = 3.14f64,
+            );
+            let _enter = span.enter();
+        }
+
+        let msg = rx.recv().await.expect("should receive trace");
+        match msg {
+            ExportMessage::Traces(data) => {
+                for name in &[
+                    "str_field",
+                    "i64_field",
+                    "u64_field",
+                    "bool_field",
+                    "f64_field",
+                ] {
+                    assert!(
+                        data.windows(name.len()).any(|w| w == name.as_bytes()),
+                        "field '{}' not found in protobuf",
+                        name
+                    );
+                }
+                assert!(
+                    data.windows(5).any(|w| w == b"hello"),
+                    "string value 'hello' not found"
+                );
+            }
+            other => panic!("expected Traces, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn parent_span_id_propagated_to_child() {
+        let (exporter, mut rx) = Exporter::start_test();
+        let layer = OtlpLayer::new(exporter, "test-svc", "0.0.1", "test", true, true);
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        {
+            let parent = tracing::info_span!("parent-span");
+            let _parent_enter = parent.enter();
+            {
+                let child = tracing::info_span!("child-span");
+                let _child_enter = child.enter();
+            } // child closes first
+        } // parent closes second
+
+        // First: child span
+        let msg1 = rx.recv().await.expect("should receive child trace");
+        match &msg1 {
+            ExportMessage::Traces(data) => {
+                assert!(
+                    data.windows(10).any(|w| w == b"child-span"),
+                    "child span name not found"
+                );
+            }
+            other => panic!("expected Traces for child, got {:?}", other),
+        }
+
+        // Second: parent span
+        let msg2 = rx.recv().await.expect("should receive parent trace");
+        match &msg2 {
+            ExportMessage::Traces(data) => {
+                assert!(
+                    data.windows(11).any(|w| w == b"parent-span"),
+                    "parent span name not found"
+                );
+            }
+            other => panic!("expected Traces for parent, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn layer_skips_log_export_when_disabled() {
+        let (exporter, mut rx) = Exporter::start_test();
+        let layer = OtlpLayer::new(exporter, "test-svc", "0.0.1", "test", true, false);
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        // Emit an event — should be suppressed
+        tracing::info!("should not export");
+
+        // Create and close a span — trace should still arrive
+        {
+            let span = tracing::info_span!("traced-span");
+            let _enter = span.enter();
+        }
+
+        let msg = rx.recv().await.expect("should receive trace");
+        assert!(
+            matches!(msg, ExportMessage::Traces(_)),
+            "expected Traces, got {:?}",
+            msg
+        );
+
+        // No more messages expected
+        let extra = tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await;
+        assert!(extra.is_err(), "expected no more messages");
+    }
+
+    #[tokio::test]
+    async fn layer_skips_trace_export_when_disabled() {
+        let (exporter, mut rx) = Exporter::start_test();
+        let layer = OtlpLayer::new(exporter, "test-svc", "0.0.1", "test", false, true);
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        // Emit an event inside a span
+        {
+            let span = tracing::info_span!("suppressed-span");
+            let _enter = span.enter();
+            tracing::info!("logged event");
+        }
+
+        // Should receive the log but not the trace
+        let msg = rx.recv().await.expect("should receive log");
+        assert!(
+            matches!(msg, ExportMessage::Logs(_)),
+            "expected Logs, got {:?}",
+            msg
+        );
+
+        // No trace message expected
+        let extra = tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await;
+        assert!(extra.is_err(), "expected no trace message");
     }
 }

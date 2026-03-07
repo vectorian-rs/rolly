@@ -162,6 +162,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tower::ServiceExt;
 
     #[test]
     fn cf_request_id_layer_constructs() {
@@ -189,5 +190,53 @@ mod tests {
             .get("x-amz-cf-id")
             .and_then(|v| v.to_str().ok());
         assert_eq!(request_id, None);
+    }
+
+    #[tokio::test]
+    async fn middleware_wraps_request_and_returns_response() {
+        let svc = tower::service_fn(|_req: Request<String>| async {
+            Ok::<_, std::convert::Infallible>(Response::new(String::from("ok")))
+        });
+        let svc = CfRequestIdLayer.layer(svc);
+
+        let req = Request::builder()
+            .header("x-amz-cf-id", "test-cf-id-123")
+            .body(String::new())
+            .unwrap();
+
+        let resp = svc.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 200);
+        assert_eq!(resp.into_body(), "ok");
+    }
+
+    #[tokio::test]
+    async fn middleware_works_without_cf_header() {
+        let svc = tower::service_fn(|_req: Request<String>| async {
+            Ok::<_, std::convert::Infallible>(Response::new(String::from("ok")))
+        });
+        let svc = CfRequestIdLayer.layer(svc);
+
+        let req = Request::builder().body(String::new()).unwrap();
+
+        let resp = svc.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn middleware_propagates_error_status() {
+        let svc = tower::service_fn(|_req: Request<String>| async {
+            Ok::<_, std::convert::Infallible>(
+                Response::builder()
+                    .status(404)
+                    .body(String::from("not found"))
+                    .unwrap(),
+            )
+        });
+        let svc = CfRequestIdLayer.layer(svc);
+
+        let req = Request::builder().body(String::new()).unwrap();
+
+        let resp = svc.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 404);
     }
 }

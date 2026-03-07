@@ -22,3 +22,32 @@ pub mod metrics {
     pub const REQUEST_COUNT: &str = "http.server.request.count";
     pub const ERROR_COUNT: &str = "http.server.error.count";
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn field_constants_are_non_empty() {
+        assert!(!fields::TRACE_ID.is_empty());
+        assert!(!fields::SPAN_ID.is_empty());
+        assert!(!fields::HTTP_METHOD.is_empty());
+        assert!(!fields::HTTP_URI.is_empty());
+        assert!(!fields::HTTP_STATUS_CODE.is_empty());
+        assert!(!fields::HTTP_LATENCY_MS.is_empty());
+        assert!(!fields::CF_REQUEST_ID.is_empty());
+    }
+
+    #[test]
+    fn metric_constants_are_non_empty() {
+        assert!(!metrics::REQUEST_DURATION.is_empty());
+        assert!(!metrics::REQUEST_COUNT.is_empty());
+        assert!(!metrics::ERROR_COUNT.is_empty());
+    }
+
+    #[test]
+    fn trace_id_constant_matches_field_collector() {
+        // FieldCollector in otlp_layer.rs uses the literal "trace_id"
+        assert_eq!(fields::TRACE_ID, "trace_id");
+    }
+}
