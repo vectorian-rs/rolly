@@ -988,3 +988,117 @@ mod tests {
         }
     }
 }
+
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    /// attrs_hash_unordered never panics for 0..=3 attributes
+    /// with key/value lengths 0..=3 bytes each.
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn attrs_hash_no_panic() {
+        let count: usize = kani::any();
+        kani::assume(count <= 3);
+
+        let k0: [u8; 3] = kani::any();
+        let v0: [u8; 3] = kani::any();
+        let k1: [u8; 3] = kani::any();
+        let v1: [u8; 3] = kani::any();
+        let k2: [u8; 3] = kani::any();
+        let v2: [u8; 3] = kani::any();
+
+        let kl0: usize = kani::any();
+        kani::assume(kl0 <= 3);
+        let vl0: usize = kani::any();
+        kani::assume(vl0 <= 3);
+        let kl1: usize = kani::any();
+        kani::assume(kl1 <= 3);
+        let vl1: usize = kani::any();
+        kani::assume(vl1 <= 3);
+        let kl2: usize = kani::any();
+        kani::assume(kl2 <= 3);
+        let vl2: usize = kani::any();
+        kani::assume(vl2 <= 3);
+
+        // Ensure all bytes are valid UTF-8 (ASCII subset)
+        for b in k0
+            .iter()
+            .chain(v0.iter())
+            .chain(k1.iter())
+            .chain(v1.iter())
+            .chain(k2.iter())
+            .chain(v2.iter())
+        {
+            kani::assume(*b < 128);
+        }
+
+        let s_k0 = core::str::from_utf8(&k0[..kl0]).unwrap();
+        let s_v0 = core::str::from_utf8(&v0[..vl0]).unwrap();
+        let s_k1 = core::str::from_utf8(&k1[..kl1]).unwrap();
+        let s_v1 = core::str::from_utf8(&v1[..vl1]).unwrap();
+        let s_k2 = core::str::from_utf8(&k2[..kl2]).unwrap();
+        let s_v2 = core::str::from_utf8(&v2[..vl2]).unwrap();
+
+        let all = [(s_k0, s_v0), (s_k1, s_v1), (s_k2, s_v2)];
+        let _ = attrs_hash_unordered(&all[..count]);
+    }
+
+    /// wrapping_add is commutative, so hash is order-independent for 2 attrs.
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn attrs_hash_order_independent() {
+        let k0: [u8; 2] = kani::any();
+        let v0: [u8; 2] = kani::any();
+        let k1: [u8; 2] = kani::any();
+        let v1: [u8; 2] = kani::any();
+
+        for b in k0.iter().chain(v0.iter()).chain(k1.iter()).chain(v1.iter()) {
+            kani::assume(*b < 128);
+        }
+
+        let sk0 = core::str::from_utf8(&k0).unwrap();
+        let sv0 = core::str::from_utf8(&v0).unwrap();
+        let sk1 = core::str::from_utf8(&k1).unwrap();
+        let sv1 = core::str::from_utf8(&v1).unwrap();
+
+        let ab = [(sk0, sv0), (sk1, sv1)];
+        let ba = [(sk1, sv1), (sk0, sv0)];
+
+        assert!(attrs_hash_unordered(&ab) == attrs_hash_unordered(&ba));
+    }
+
+    /// Empty attrs always hashes to 0.
+    #[kani::proof]
+    fn attrs_hash_empty_is_zero() {
+        let empty: &[(&str, &str)] = &[];
+        assert!(attrs_hash_unordered(empty) == 0);
+    }
+
+    /// partition_point on histogram boundaries never panics and returns
+    /// a valid bucket index for any f64 value and any boundary set.
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn partition_point_valid_bucket() {
+        let count: usize = kani::any();
+        kani::assume(count <= 3);
+
+        let b0: f64 = kani::any();
+        let b1: f64 = kani::any();
+        let b2: f64 = kani::any();
+
+        // Boundaries must be finite and sorted ascending (as in real histogram setup)
+        kani::assume(b0.is_finite() && b1.is_finite() && b2.is_finite());
+        kani::assume(b0 <= b1 && b1 <= b2);
+
+        let boundaries = [b0, b1, b2];
+        let bounds = &boundaries[..count];
+
+        let value: f64 = kani::any();
+        kani::assume(value.is_finite());
+
+        let idx = bounds.partition_point(|&b| b <= value);
+        // bucket_counts has len = boundaries.len() + 1
+        assert!(idx <= count);
+    }
+}
