@@ -89,5 +89,10 @@ name = "allocation_scaling"
 harness = false
 required-features = ["_bench"]
 
+[[bench]]
+name = "hot_path"
+harness = false
+required-features = ["_bench"]
+
 [[example]]
 name = "render_baseline"

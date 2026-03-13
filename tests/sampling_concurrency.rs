@@ -112,3 +112,52 @@ fn sampling_single_trace_id_many_calls() {
         h.join().unwrap();
     }
 }
+
+#[test]
+fn sampled_out_produces_zero_channel_messages_under_concurrency() {
+    use rolly::bench::{Exporter, OtlpLayer};
+    use tracing_subscriber::layer::SubscriberExt;
+
+    let before = rolly::telemetry_dropped_total();
+    let (exporter, mut rx) = Exporter::start_test_with_capacity(1024);
+    let layer = OtlpLayer::new(exporter, "sample-test", "0.0.1", "test", true, true, 0.0);
+    let subscriber = tracing_subscriber::registry().with(layer);
+    let dispatch = tracing::Dispatch::new(subscriber);
+
+    let barrier = Arc::new(Barrier::new(8));
+
+    let handles: Vec<_> = (0..8)
+        .map(|_| {
+            let dispatch = dispatch.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                tracing::dispatcher::with_default(&dispatch, || {
+                    for _ in 0..500 {
+                        let span = tracing::info_span!("sampled-out");
+                        let _enter = span.enter();
+                        tracing::info!("sampled-out-event");
+                    }
+                });
+            })
+        })
+        .collect();
+
+    for h in handles {
+        h.join().unwrap();
+    }
+
+    // No messages should have been sent (sampled-out spans and their events are suppressed)
+    assert!(
+        rx.try_recv().is_err(),
+        "expected no messages in channel when sampling_rate=0.0"
+    );
+
+    // No drops either -- sends were never attempted
+    let delta = rolly::telemetry_dropped_total() - before;
+    assert_eq!(
+        delta, 0,
+        "expected 0 drops (sends never attempted), got {}",
+        delta
+    );
+}
