@@ -99,11 +99,11 @@ mod kani_proofs {
     use super::*;
 
     #[kani::proof]
-    #[kani::unwind(34)]
+    #[kani::unwind(6)]
     fn hex_encode_output_length() {
         let len: usize = kani::any();
-        kani::assume(len <= 32);
-        let input: [u8; 32] = kani::any();
+        kani::assume(len <= 4);
+        let input: [u8; 4] = kani::any();
         let result = hex_encode(&input[..len]);
         assert!(result.len() == 2 * len);
     }

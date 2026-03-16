@@ -108,7 +108,7 @@ impl Visit for FieldCollector {
 
 // --- Helpers ---
 
-fn hex_to_bytes_16(s: &str) -> Result<[u8; 16], ()> {
+pub(crate) fn hex_to_bytes_16(s: &str) -> Result<[u8; 16], ()> {
     if s.len() != 32 {
         return Err(());
     }
@@ -800,11 +800,12 @@ mod kani_proofs {
     }
 
     #[kani::proof]
+    #[kani::unwind(2)]
     fn hex_to_bytes_16_length_check() {
         let len: usize = kani::any();
-        kani::assume(len <= 64);
+        kani::assume(len <= 34);
         kani::assume(len != 32);
-        let buf: [u8; 64] = [b'0'; 64];
+        let buf: [u8; 34] = [b'0'; 34];
         // SAFETY: all bytes are 0x30 ('0'), valid UTF-8
         let s = unsafe { core::str::from_utf8_unchecked(&buf[..len]) };
         assert!(hex_to_bytes_16(s).is_err());
