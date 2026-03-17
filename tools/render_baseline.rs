@@ -1,4 +1,4 @@
-//! Reads `benches/baseline.toml` and renders `docs/performance.svg`.
+//! Reads `benches/baseline.toml` and renders `docs/illustration/performance.svg`.
 //!
 //! Usage: `cargo run --example render_baseline`
 
@@ -144,7 +144,7 @@ fn main() {
     }
 
     // Create SVG
-    let root = SVGBackend::new("docs/performance.svg", (SVG_W, SVG_H)).into_drawing_area();
+    let root = SVGBackend::new("docs/illustration/performance.svg", (SVG_W, SVG_H)).into_drawing_area();
     root.fill(&WHITE).unwrap();
 
     let title = format!(
@@ -503,5 +503,5 @@ fn main() {
     }
 
     root.present().unwrap();
-    println!("Rendered docs/performance.svg");
+    println!("Rendered docs/illustration/performance.svg");
 }

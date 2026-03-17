@@ -1,6 +1,6 @@
 //! Generate flamechart SVGs and criterion-based comparison outputs.
 //!
-//! Produces in `docs/flamecharts/`:
+//! Produces in `docs/benchmarks/`:
 //! - `flamechart_after.svg`   — optimized rolly Counter::add
 //! - `flamechart_otel.svg`    — OpenTelemetry SDK 0.31 Counter::add
 //! - `comparison_table.svg`   — criterion benchmark comparison with 95% CIs
@@ -269,7 +269,7 @@ fn write_criterion_toml(groups: &[BenchmarkGroup]) {
         t.push('\n');
     }
 
-    let path = "docs/flamecharts/benchmark_results.toml";
+    let path = "docs/benchmarks/benchmark_results.toml";
     std::fs::write(path, &t).expect("write benchmark_results.toml");
     eprintln!("  Written: {} ({} bytes)", path, t.len());
 }
@@ -292,30 +292,47 @@ fn render_comparison_table_svg(groups: &[BenchmarkGroup]) {
 
     let _ = writeln!(
         s,
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {} {}\" \
-         font-family=\"'Inter','SF Pro Display',system-ui,sans-serif\" font-size=\"14\">",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {} {}\">",
         total_w, total_h
     );
     s.push_str(concat!(
         "<style>\n",
-        "  .title { font-size: 17px; font-weight: 700; fill: #111827; letter-spacing: -0.02em; }\n",
-        "  .subtitle { font-size: 12px; fill: #9ca3af; }\n",
-        "  .hdr { font-size: 12px; font-weight: 600; fill: #6b7280; }\n",
-        "  .scenario { font-size: 14px; fill: #111827; font-weight: 500; }\n",
-        "  .v { font-size: 13px; fill: #374151; text-anchor: end; font-variant-numeric: tabular-nums; }\n",
+        "  .title { font: bold 18px monospace; fill: #1e293b; }\n",
+        "  .subtitle { font: 12px system-ui, -apple-system, sans-serif; fill: #94a3b8; }\n",
+        "  .hdr { font: bold 12px monospace; fill: #64748b; }\n",
+        "  .scenario { font: 500 12px monospace; fill: #1e293b; }\n",
+        "  .v { font: 12px monospace; fill: #1e293b; text-anchor: end; font-variant-numeric: tabular-nums; }\n",
         "  .best { fill: #059669; font-weight: 600; }\n",
         "  .worst { fill: #dc2626; }\n",
-        "  .neutral { fill: #6b7280; }\n",
-        "  .grid { stroke: #e5e7eb; stroke-width: 1; }\n",
-        "  .grid-thick { stroke: #d1d5db; stroke-width: 1.5; }\n",
+        "  .neutral { fill: #94a3b8; }\n",
+        "  .grid { stroke: #e2e8f0; stroke-width: 1; }\n",
+        "  .grid-thick { stroke: #cbd5e1; stroke-width: 1; }\n",
         "</style>\n",
     ));
 
     // Background
     let _ = writeln!(
         s,
-        "<rect width=\"{}\" height=\"{}\" fill=\"#ffffff\"/>",
+        "<rect width=\"{}\" height=\"{}\" fill=\"#fafafa\"/>",
         total_w, total_h
+    );
+
+    // Table container
+    let _ = writeln!(
+        s,
+        "<rect x=\"0\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"#fff\" stroke=\"#e2e8f0\" stroke-width=\"1\" rx=\"4\"/>",
+        table_top, total_w, table_h
+    );
+    // Accent line
+    let _ = writeln!(
+        s,
+        "<rect x=\"0\" y=\"{}\" width=\"{}\" height=\"4\" fill=\"#ea580c\" rx=\"4\"/>",
+        table_top, total_w
+    );
+    let _ = writeln!(
+        s,
+        "<rect x=\"0\" y=\"{}\" width=\"{}\" height=\"2\" fill=\"#ea580c\"/>",
+        table_top + 2.0, total_w
     );
 
     // Title
@@ -332,7 +349,7 @@ fn render_comparison_table_svg(groups: &[BenchmarkGroup]) {
     // Header row background
     let _ = writeln!(
         s,
-        "<rect x=\"0\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"#f8fafc\"/>",
+        "<rect x=\"0\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"#fff\"/>",
         table_top, total_w, hdr_h
     );
 
@@ -373,7 +390,7 @@ fn render_comparison_table_svg(groups: &[BenchmarkGroup]) {
         if idx % 2 == 1 {
             let _ = writeln!(
                 s,
-                "<rect x=\"0\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"#f9fafb\"/>",
+                "<rect x=\"0\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"#fafafa\"/>",
                 ry, total_w, row_h
             );
         }
@@ -490,7 +507,7 @@ fn render_comparison_table_svg(groups: &[BenchmarkGroup]) {
 
     s.push_str("</svg>\n");
 
-    let path = "docs/flamecharts/comparison_table.svg";
+    let path = "docs/benchmarks/comparison_table.svg";
     std::fs::write(path, &s).expect("write comparison_table.svg");
     eprintln!("  Written: {} ({} bytes)", path, s.len());
 }
@@ -518,7 +535,7 @@ fn generate_all() {
     ];
 
     for (arg, filename, title) in variants {
-        let svg_path = format!("docs/flamecharts/{}", filename);
+        let svg_path = format!("docs/benchmarks/{}", filename);
         let tag = arg.trim_start_matches("--");
         let sample_path = format!("/tmp/rolly_flamechart_{}.txt", tag);
 
@@ -616,7 +633,7 @@ fn generate_all() {
         render_comparison_table_svg(&groups);
     }
 
-    eprintln!("\nDone. Flamecharts in docs/flamecharts/");
+    eprintln!("\nDone. Flamecharts in docs/benchmarks/");
 }
 
 /// Parse the generated SVG and print a summary of flame frames for verification.

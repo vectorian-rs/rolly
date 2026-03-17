@@ -96,3 +96,4 @@ required-features = ["_bench"]
 
 [[example]]
 name = "render_baseline"
+path = "tools/render_baseline.rs"

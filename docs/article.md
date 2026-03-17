@@ -160,7 +160,7 @@ OTel's main cost is hashing and comparing `KeyValue` structs, which are heap-all
 
 ## Methodology
 
-**Latency numbers** come from [criterion.rs](https://bheisler.github.io/criterion.rs/book/) (`benches/comparison_otel.rs`). Criterion runs each benchmark for 100+ iterations, computes mean with 95% confidence intervals, performs outlier analysis, and detects regressions. All OTel benchmarks pre-build `KeyValue` arrays outside the measurement loop for a fair comparison. Results are machine-readable at `docs/flamecharts/benchmark_results.toml`.
+**Latency numbers** come from [criterion.rs](https://bheisler.github.io/criterion.rs/book/) (`benches/comparison_otel.rs`). Criterion runs each benchmark for 100+ iterations, computes mean with 95% confidence intervals, performs outlier analysis, and detects regressions. All OTel benchmarks pre-build `KeyValue` arrays outside the measurement loop for a fair comparison. Results are machine-readable at `docs/benchmarks/benchmark_results.toml`.
 
 **Flamechart profiling** uses a self-contained bench binary (`benches/generate_flamecharts.rs`). The binary:
 
@@ -236,12 +236,12 @@ We wrote 19 proof harnesses across four source files:
 
 Kani verifies sequential code. For concurrent behavior — channels, shared state, flush/shutdown ordering — we wrote TLA+ specifications.
 
-**`specs/exporter.tla`** models the exporter channel:
+**`verification/specs/exporter.tla`** models the exporter channel:
 - **Liveness:** buffers eventually flush (no telemetry is silently lost while the channel has capacity)
 - **Boundedness:** the channel never exceeds its configured capacity
 - **No deadlock:** flush and shutdown operations always complete
 
-**`specs/metrics_registry.tla`** models the metrics aggregation loop:
+**`verification/specs/metrics_registry.tla`** models the metrics aggregation loop:
 - **No deadlock:** concurrent `write` + `collect` operations interleave safely
 - **Liveness:** `collect()` returns without blocking
 - **Completeness:** a snapshot sees all registered instruments

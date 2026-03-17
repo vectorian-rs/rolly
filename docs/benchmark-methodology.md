@@ -13,8 +13,8 @@ Establish a repeatable performance measurement framework for a Rust library or s
 ```
 benches/realistic_scenario.rs   ← Criterion benchmarks simulating real traffic
 benches/baseline.toml           ← Committed measured results (diffable in PRs)
-examples/render_baseline.rs     ← Reads TOML → renders SVG via plotters
-docs/performance.svg            ← Self-contained 4-panel visualization
+tools/render_baseline.rs        ← Reads TOML → renders SVG via plotters
+docs/illustration/performance.svg ← Self-contained 4-panel visualization
 ```
 
 ## Step 1: Define the Workload Scenario
@@ -281,7 +281,7 @@ serde = { version = "1", features = ["derive"] }
 name = "render_baseline"
 ```
 
-The renderer (`examples/render_baseline.rs`) reads `benches/baseline.toml` and produces `docs/performance.svg` with panels:
+The renderer (`tools/render_baseline.rs`) reads `benches/baseline.toml` and produces `docs/illustration/performance.svg` with panels:
 
 1. **Per-Operation Latency** — Horizontal bar chart, one bar per operation. Color-coded: green (<70% of budget), yellow (70-100%), red (>budget). Vertical dashed line at budget threshold.
 

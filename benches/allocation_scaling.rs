@@ -512,34 +512,34 @@ fn render_svg(scenarios: &[ScenarioResults]) {
     let col_ns_otel_x = col_ns_x + col_val_w;
     let table_w = col_ns_otel_x + col_val_w;
 
-    let green = "#E8F5E9"; // light green bg for winner
-    let blue_bg = "#E3F2FD"; // light blue bg for winner
-    let header_bg = "#37474F";
-    let header_bg2 = "#455A64";
-    let header_fg = "#FFFFFF";
-    let white = "#FFFFFF";
-    let alt_row = "#FAFAFA";
-    let border = "#CFD8DC";
-    let text_color = "#212121";
-    let subtitle_color = "#757575";
-    let header_line = "#546E7A";
-    let legend_text = "#616161";
-    let legend_muted = "#9E9E9E";
+    let green = "#ecfdf5"; // light green bg for winner
+    let blue_bg = "#eff6ff"; // light blue bg for winner
+    let header_bg = "#fff";
+    let header_bg2 = "#fff";
+    let header_fg = "#1e293b";
+    let white = "#ffffff";
+    let alt_row = "#fafafa";
+    let border = "#e2e8f0";
+    let text_color = "#1e293b";
+    let subtitle_color = "#64748b";
+    let header_line = "#e2e8f0";
+    let legend_text = "#64748b";
+    let legend_muted = "#94a3b8";
+    let accent = "#ea580c";
 
     let mut svg = String::with_capacity(4096);
-    writeln!(svg, "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}\" height=\"{svg_h}\" font-family=\"monospace, Menlo, Consolas, 'Courier New'\">").unwrap();
-    writeln!(
-        svg,
-        "<rect width=\"{w}\" height=\"{svg_h}\" fill=\"{white}\"/>"
-    )
-    .unwrap();
+    writeln!(svg, "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}\" height=\"{svg_h}\">").unwrap();
+    writeln!(svg, "<rect width=\"{w}\" height=\"{svg_h}\" fill=\"#fafafa\"/>").unwrap();
 
     // Title
-    writeln!(svg, "<text x=\"{}\" y=\"35\" font-size=\"20\" font-weight=\"bold\" text-anchor=\"middle\" fill=\"{text_color}\">Allocation Scaling &#x2014; rolly vs OTel (N = 10,000)</text>", w / 2).unwrap();
-    writeln!(svg, "<text x=\"{}\" y=\"55\" font-size=\"12\" fill=\"{subtitle_color}\" text-anchor=\"middle\">Lower is better. Winner highlighted.</text>", w / 2).unwrap();
+    writeln!(svg, "<text x=\"{}\" y=\"35\" font-size=\"18\" font-weight=\"bold\" text-anchor=\"middle\" fill=\"{text_color}\" font-family=\"monospace\">Allocation Scaling &#x2014; rolly vs OTel (N = 10,000)</text>", w / 2).unwrap();
+    writeln!(svg, "<text x=\"{}\" y=\"55\" font-size=\"12\" fill=\"{subtitle_color}\" text-anchor=\"middle\" font-family=\"system-ui, -apple-system, sans-serif\">Lower is better. Winner highlighted.</text>", w / 2).unwrap();
 
     // Table border
-    writeln!(svg, "<rect x=\"{table_x}\" y=\"{table_y}\" width=\"{table_w}\" height=\"{table_h}\" fill=\"none\" stroke=\"{border}\" stroke-width=\"1\" rx=\"4\"/>").unwrap();
+    writeln!(svg, "<rect x=\"{table_x}\" y=\"{table_y}\" width=\"{table_w}\" height=\"{table_h}\" fill=\"{white}\" stroke=\"{border}\" stroke-width=\"1\" rx=\"4\"/>").unwrap();
+    // Accent line at top
+    writeln!(svg, "<rect x=\"{table_x}\" y=\"{table_y}\" width=\"{table_w}\" height=\"4\" fill=\"{accent}\" rx=\"4\"/>").unwrap();
+    writeln!(svg, "<rect x=\"{table_x}\" y=\"{}\" width=\"{table_w}\" height=\"2\" fill=\"{accent}\"/>", table_y + 2).unwrap();
 
     // --- Header row 1: merged group headers ---
     let hy = table_y;
@@ -556,9 +556,9 @@ fn render_svg(scenarios: &[ScenarioResults]) {
     let allocs_cx = table_x + col_allocs_x + col_val_w; // center of 2 columns
     let ns_cx = table_x + col_ns_x + col_val_w;
     let ty = hy + 26;
-    writeln!(svg, "<text x=\"{scenario_cx}\" y=\"{ty}\" font-size=\"14\" font-weight=\"bold\" fill=\"{header_fg}\" text-anchor=\"middle\">Scenario</text>").unwrap();
-    writeln!(svg, "<text x=\"{allocs_cx}\" y=\"{ty}\" font-size=\"14\" font-weight=\"bold\" fill=\"{header_fg}\" text-anchor=\"middle\">allocs / op</text>").unwrap();
-    writeln!(svg, "<text x=\"{ns_cx}\" y=\"{ty}\" font-size=\"14\" font-weight=\"bold\" fill=\"{header_fg}\" text-anchor=\"middle\">ns / op</text>").unwrap();
+    writeln!(svg, "<text x=\"{scenario_cx}\" y=\"{ty}\" font-size=\"12\" font-weight=\"bold\" fill=\"{header_fg}\" text-anchor=\"middle\" font-family=\"monospace\">Scenario</text>").unwrap();
+    writeln!(svg, "<text x=\"{allocs_cx}\" y=\"{ty}\" font-size=\"12\" font-weight=\"bold\" fill=\"{header_fg}\" text-anchor=\"middle\" font-family=\"monospace\">allocs / op</text>").unwrap();
+    writeln!(svg, "<text x=\"{ns_cx}\" y=\"{ty}\" font-size=\"12\" font-weight=\"bold\" fill=\"{header_fg}\" text-anchor=\"middle\" font-family=\"monospace\">ns / op</text>").unwrap();
 
     // Vertical separator lines in header
     for &cx in &[col_allocs_x, col_allocs_otel_x, col_ns_x, col_ns_otel_x] {
@@ -569,6 +569,7 @@ fn render_svg(scenarios: &[ScenarioResults]) {
     // --- Header row 2: sub-headers ---
     let hy2 = hy + row_h;
     writeln!(svg, "<rect x=\"{table_x}\" y=\"{hy2}\" width=\"{table_w}\" height=\"{row_h}\" fill=\"{header_bg2}\"/>").unwrap();
+    writeln!(svg, "<line x1=\"{table_x}\" y1=\"{hy2}\" x2=\"{}\" y2=\"{hy2}\" stroke=\"{border}\" stroke-width=\"1\"/>", table_x + table_w).unwrap();
     let ty2 = hy2 + 26;
     for (col_x, label) in [
         (col_allocs_x, "rolly"),
@@ -577,7 +578,7 @@ fn render_svg(scenarios: &[ScenarioResults]) {
         (col_ns_otel_x, "OTel"),
     ] {
         let cx = table_x + col_x + col_val_w / 2;
-        writeln!(svg, "<text x=\"{cx}\" y=\"{ty2}\" font-size=\"13\" font-weight=\"bold\" fill=\"{header_fg}\" text-anchor=\"middle\">{label}</text>").unwrap();
+        writeln!(svg, "<text x=\"{cx}\" y=\"{ty2}\" font-size=\"12\" font-weight=\"bold\" fill=\"{header_fg}\" text-anchor=\"middle\" font-family=\"monospace\">{label}</text>").unwrap();
     }
 
     // --- Data rows ---
@@ -609,7 +610,7 @@ fn render_svg(scenarios: &[ScenarioResults]) {
         // Scenario name
         writeln!(
             svg,
-            "<text x=\"{}\" y=\"{ty}\" font-size=\"13\" fill=\"{text_color}\">{}</text>",
+            "<text x=\"{}\" y=\"{ty}\" font-size=\"12\" fill=\"{text_color}\" font-family=\"monospace\">{}</text>",
             table_x + 12,
             row.scenario
         )
@@ -639,7 +640,7 @@ fn render_svg(scenarios: &[ScenarioResults]) {
         ];
         for (col_x, val) in &vals {
             let cx = table_x + col_x + col_val_w - 16;
-            writeln!(svg, "<text x=\"{cx}\" y=\"{ty}\" font-size=\"13\" fill=\"{text_color}\" text-anchor=\"end\">{val}</text>").unwrap();
+            writeln!(svg, "<text x=\"{cx}\" y=\"{ty}\" font-size=\"12\" fill=\"{text_color}\" text-anchor=\"end\" font-family=\"monospace\">{val}</text>").unwrap();
         }
 
         // Horizontal row separator
@@ -659,28 +660,28 @@ fn render_svg(scenarios: &[ScenarioResults]) {
     writeln!(svg, "<rect x=\"{}\" y=\"{}\" width=\"14\" height=\"14\" fill=\"{green}\" stroke=\"{border}\" stroke-width=\"0.5\" rx=\"2\"/>", table_x, ly - 12).unwrap();
     writeln!(
         svg,
-        "<text x=\"{}\" y=\"{ly}\" font-size=\"12\" fill=\"{legend_text}\">rolly wins</text>",
+        "<text x=\"{}\" y=\"{ly}\" font-size=\"10\" fill=\"{legend_text}\" font-family=\"system-ui, -apple-system, sans-serif\">rolly wins</text>",
         table_x + 20
     )
     .unwrap();
     writeln!(svg, "<rect x=\"{}\" y=\"{}\" width=\"14\" height=\"14\" fill=\"{blue_bg}\" stroke=\"{border}\" stroke-width=\"0.5\" rx=\"2\"/>", table_x + 120, ly - 12).unwrap();
     writeln!(
         svg,
-        "<text x=\"{}\" y=\"{ly}\" font-size=\"12\" fill=\"{legend_text}\">OTel wins</text>",
+        "<text x=\"{}\" y=\"{ly}\" font-size=\"10\" fill=\"{legend_text}\" font-family=\"system-ui, -apple-system, sans-serif\">OTel wins</text>",
         table_x + 140
     )
     .unwrap();
     writeln!(
         svg,
-        "<text x=\"{}\" y=\"{ly}\" font-size=\"12\" fill=\"{legend_muted}\">Lower is better</text>",
+        "<text x=\"{}\" y=\"{ly}\" font-size=\"10\" fill=\"{legend_muted}\" font-family=\"system-ui, -apple-system, sans-serif\">Lower is better</text>",
         table_x + 240
     )
     .unwrap();
 
     writeln!(svg, "</svg>").unwrap();
 
-    std::fs::write("docs/allocation_scaling.svg", &svg).unwrap();
-    println!("Rendered docs/allocation_scaling.svg");
+    std::fs::write("docs/illustration/allocation-scaling.svg", &svg).unwrap();
+    println!("Rendered docs/illustration/allocation-scaling.svg");
 }
 
 // ---------------------------------------------------------------------------

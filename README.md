@@ -162,9 +162,34 @@ rolly hand-rolls the protobuf wire format (~200 lines). The format has been stab
 
 rolly targets <10% CPU overhead at 3000 req/s on ARM64.
 
-![Performance baseline](docs/performance.svg)
+![Performance baseline](docs/illustration/performance.svg)
 
 Benchmarks simulate realistic e-commerce API traffic. See [benches/baseline.toml](benches/baseline.toml) for raw numbers.
+
+## Changelog
+
+### v0.9.0
+- Configurable `BackpressureStrategy` enum (currently `Drop`; extensible)
+- End-to-end tests with Vector (OTLP HTTP → JSON file assertions)
+- 19 Kani proof harnesses, 2 TLA+ specs, 9 proptests, 3 fuzz targets
+
+### v0.5.0
+- Histogram instrument with configurable bucket boundaries
+- Automatic exemplar capture (trace_id + span_id on metric data points)
+- `TelemetryConfig` accepts `String` fields
+
+### v0.4.0
+- Deterministic head-based trace sampling (consistent by trace_id across services)
+
+### v0.3.0
+- Native OTLP metrics: Counter and Gauge with client-side aggregation
+- `ExportMetricsServiceRequest` protobuf encoding and HTTP export
+
+### v0.2.0
+- Independent trace and log export configuration (separate endpoints)
+
+### v0.1.3
+- Generic request ID support (any header, not just CloudFront)
 
 ## License
 

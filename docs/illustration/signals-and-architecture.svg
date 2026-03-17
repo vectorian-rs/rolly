@@ -1,0 +1,314 @@
+<svg viewBox="0 0 1100 1200" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    .title { font: bold 18px monospace; fill: #1e293b; }
+    .subtitle { font: 14px system-ui, -apple-system, sans-serif; fill: #64748b; }
+    .col-hdr { font: bold 11px monospace; fill: #64748b; }
+    .row-label { font: bold 13px monospace; }
+    .row-desc { font: 10px system-ui, -apple-system, sans-serif; fill: #64748b; }
+    .spec-hdr { font: bold 10px monospace; fill: #1e293b; }
+    .spec { font: 10px system-ui, -apple-system, sans-serif; fill: #1e293b; }
+    .spec-dim { font: 10px system-ui, -apple-system, sans-serif; fill: #94a3b8; }
+    .spec-accent { font: bold 10px monospace; }
+    .check { font: 10px system-ui, -apple-system, sans-serif; }
+    .footer-text { font: bold 10px monospace; }
+    .pill { font: bold 9px system-ui, -apple-system, sans-serif; }
+    .arch-title { font: bold 12px monospace; }
+    .arch-sub { font: 10px system-ui, -apple-system, sans-serif; fill: #94a3b8; }
+    .arch-body { font: 10px system-ui, -apple-system, sans-serif; fill: #1e293b; }
+    .arch-sm { font: 9px system-ui, -apple-system, sans-serif; fill: #64748b; }
+    .arch-signal { font: 9px monospace; }
+    .pipe-label { font: 10px monospace; }
+    .footer { font: 10px system-ui, -apple-system, sans-serif; fill: #94a3b8; }
+  </style>
+
+  <!-- Canvas -->
+  <rect width="1100" height="1200" fill="#fafafa"/>
+
+  <!-- ═══ TITLE ═══ -->
+  <text x="550" y="30" text-anchor="middle" class="title">Signal Coverage &amp; Architecture</text>
+  <text x="550" y="50" text-anchor="middle" class="subtitle">rolly v0.9.0 &#x2014; OpenTelemetry Traces, Logs, Metrics via the tracing crate</text>
+
+  <!-- Column headers -->
+  <g transform="translate(20,64)">
+    <rect width="1060" height="24" rx="4" fill="#fff" stroke="#e2e8f0" stroke-width="1"/>
+    <text x="150" y="16" text-anchor="middle" class="col-hdr">OPENTELEMETRY SPEC</text>
+    <text x="475" y="16" text-anchor="middle" class="col-hdr">TRACING CRATE (RUST)</text>
+    <text x="810" y="16" text-anchor="middle" class="col-hdr">ROLLY</text>
+    <line x1="340" y1="4" x2="340" y2="20" stroke="#e2e8f0" stroke-width="1"/>
+    <line x1="630" y1="4" x2="630" y2="20" stroke="#e2e8f0" stroke-width="1"/>
+  </g>
+
+  <!-- ═══ ROW 1: TRACES ═══ -->
+  <g transform="translate(20,96)">
+    <rect width="1060" height="200" rx="4" fill="#fff" stroke="#e2e8f0" stroke-width="1"/>
+    <rect width="1060" height="4" rx="4" fill="#2563eb"/>
+
+    <!-- Row header -->
+    <text x="15" y="24" class="row-label" fill="#2563eb">TRACES</text>
+    <text x="90" y="24" class="row-desc">Distributed request tracking</text>
+
+    <!-- Status pill -->
+    <rect x="920" y="10" width="125" height="20" rx="10" fill="none" stroke="#059669" stroke-width="1"/>
+    <text x="982" y="24" text-anchor="middle" class="pill" fill="#059669">&#x2713; FULL COVERAGE</text>
+
+    <line x1="15" y1="34" x2="1045" y2="34" stroke="#e2e8f0" stroke-width="0.5"/>
+
+    <!-- Column separators -->
+    <line x1="340" y1="34" x2="340" y2="192" stroke="#e2e8f0" stroke-width="0.5"/>
+    <line x1="630" y1="34" x2="630" y2="192" stroke="#e2e8f0" stroke-width="0.5"/>
+
+    <!-- Col 1: OTEL Spec -->
+    <text x="15" y="52" class="spec-hdr">Tree of spans representing a request across services</text>
+    <text x="15" y="68" class="spec-dim">Each span carries:</text>
+    <text x="15" y="82" class="spec">&#x00B7; trace_id (128-bit) &#x2014; shared across all services</text>
+    <text x="15" y="95" class="spec">&#x00B7; span_id (64-bit) &#x2014; unique per operation</text>
+    <text x="15" y="108" class="spec">&#x00B7; parent_span_id &#x2014; builds the causal tree</text>
+    <text x="15" y="121" class="spec">&#x00B7; name, start_time, end_time (nanoseconds)</text>
+    <text x="15" y="134" class="spec">&#x00B7; attributes (typed key-value pairs)</text>
+    <text x="15" y="147" class="spec">&#x00B7; status: Ok | Error | Unset</text>
+    <text x="15" y="160" class="spec">&#x00B7; kind: Server | Client | Internal | Producer | Consumer</text>
+    <text x="15" y="182" class="spec-accent" fill="#2563eb">Wire: ExportTraceServiceRequest (protobuf)</text>
+
+    <!-- Col 2: tracing crate -->
+    <text x="355" y="52" class="spec-hdr">In-process spans with structured fields</text>
+    <text x="355" y="68" class="spec">Parent-child via .instrument() or span.enter()</text>
+    <text x="355" y="82" class="spec">Rich field types: Display, Debug, i64, bool</text>
+    <text x="355" y="95" class="spec">#[instrument] macro for automatic spans</text>
+    <text x="355" y="118" class="spec-dim">No trace_id &#x2014; spans are local only</text>
+    <text x="355" y="131" class="spec-dim">No span_id &#x2014; no global identifier</text>
+    <text x="355" y="144" class="spec-dim">No wire format &#x2014; in-process only</text>
+    <text x="355" y="157" class="spec-dim">No cross-service propagation</text>
+    <text x="355" y="182" class="spec-dim" font-style="italic">Designed for diagnostics, not distributed tracing</text>
+
+    <!-- Col 3: rolly -->
+    <text x="645" y="52" class="spec-hdr">Bridges tracing spans &#x2192; OTLP traces</text>
+    <text x="645" y="70" class="check" fill="#059669">&#x2713; Assigns trace_id (BLAKE3 from request ID or UUID v4)</text>
+    <text x="645" y="83" class="check" fill="#059669">&#x2713; Assigns span_id (random 64-bit)</text>
+    <text x="645" y="96" class="check" fill="#059669">&#x2713; Tracks parent_span_id via span extensions</text>
+    <text x="645" y="109" class="check" fill="#059669">&#x2713; Encodes ExportTraceServiceRequest</text>
+    <text x="645" y="122" class="check" fill="#059669">&#x2713; Hand-rolled protobuf (~200 lines)</text>
+    <text x="645" y="135" class="check" fill="#059669">&#x2713; HTTP POST to /v1/traces</text>
+    <text x="645" y="148" class="check" fill="#059669">&#x2713; W3C traceparent propagation (outbound)</text>
+    <text x="645" y="182" class="footer-text" fill="#059669">Standard-compliant OTLP protobuf</text>
+  </g>
+
+  <!-- ═══ ROW 2: LOGS ═══ -->
+  <g transform="translate(20,306)">
+    <rect width="1060" height="185" rx="4" fill="#fff" stroke="#e2e8f0" stroke-width="1"/>
+    <rect width="1060" height="4" rx="4" fill="#059669"/>
+
+    <!-- Row header -->
+    <text x="15" y="24" class="row-label" fill="#059669">LOGS</text>
+    <text x="60" y="24" class="row-desc">Timestamped structured records</text>
+
+    <!-- Status pill -->
+    <rect x="920" y="10" width="125" height="20" rx="10" fill="none" stroke="#059669" stroke-width="1"/>
+    <text x="982" y="24" text-anchor="middle" class="pill" fill="#059669">&#x2713; FULL COVERAGE</text>
+
+    <line x1="15" y1="34" x2="1045" y2="34" stroke="#e2e8f0" stroke-width="0.5"/>
+    <line x1="340" y1="34" x2="340" y2="177" stroke="#e2e8f0" stroke-width="0.5"/>
+    <line x1="630" y1="34" x2="630" y2="177" stroke="#e2e8f0" stroke-width="0.5"/>
+
+    <!-- Col 1: OTEL Spec -->
+    <text x="15" y="52" class="spec-hdr">Timestamped text or structured records</text>
+    <text x="15" y="68" class="spec">&#x00B7; SeverityNumber: Trace(1) &#x2192; Fatal(24)</text>
+    <text x="15" y="81" class="spec">&#x00B7; Body: string or structured AnyValue</text>
+    <text x="15" y="94" class="spec">&#x00B7; Attributes: typed key-value pairs</text>
+    <text x="15" y="107" class="spec">&#x00B7; Resource + InstrumentationScope</text>
+    <text x="15" y="120" class="spec">&#x00B7; Correlated via trace_id + span_id</text>
+    <text x="15" y="140" class="spec-dim">Logs bridge existing log systems to OTLP.</text>
+    <text x="15" y="153" class="spec-dim">Not a replacement for application logging.</text>
+    <text x="15" y="173" class="spec-accent" fill="#059669">Wire: ExportLogsServiceRequest (protobuf)</text>
+
+    <!-- Col 2: tracing crate -->
+    <text x="355" y="52" class="spec-hdr">Events: trace!() debug!() info!() warn!() error!()</text>
+    <text x="355" y="68" class="spec">Level: TRACE / DEBUG / INFO / WARN / ERROR</text>
+    <text x="355" y="81" class="spec">Structured fields with types</text>
+    <text x="355" y="94" class="spec">Events inherit parent span context</text>
+    <text x="355" y="107" class="spec">Target module for filtering</text>
+    <text x="355" y="127" class="spec-dim">No wire format</text>
+    <text x="355" y="140" class="spec-dim">No severity numbers (levels only)</text>
+    <text x="355" y="173" class="spec-dim" font-style="italic">Excellent structured logging foundation</text>
+
+    <!-- Col 3: rolly -->
+    <text x="645" y="52" class="spec-hdr">Maps tracing events &#x2192; OTLP log records</text>
+    <text x="645" y="70" class="check" fill="#059669">&#x2713; Maps Level &#x2192; SeverityNumber</text>
+    <text x="645" y="83" class="check" fill="#059669">&#x2713; Encodes body + attributes + timestamp</text>
+    <text x="645" y="96" class="check" fill="#059669">&#x2713; Includes trace_id/span_id from parent span</text>
+    <text x="645" y="109" class="check" fill="#059669">&#x2713; Encodes ExportLogsServiceRequest</text>
+    <text x="645" y="122" class="check" fill="#059669">&#x2713; HTTP POST to /v1/logs</text>
+    <text x="645" y="173" class="footer-text" fill="#059669">Standard-compliant OTLP protobuf</text>
+  </g>
+
+  <!-- ═══ ROW 3: METRICS ═══ -->
+  <g transform="translate(20,501)">
+    <rect width="1060" height="220" rx="4" fill="#fff" stroke="#e2e8f0" stroke-width="1"/>
+    <rect width="1060" height="4" rx="4" fill="#ea580c"/>
+
+    <!-- Row header -->
+    <text x="15" y="24" class="row-label" fill="#ea580c">METRICS</text>
+    <text x="100" y="24" class="row-desc">Quantitative measurements</text>
+
+    <!-- Status pill -->
+    <rect x="920" y="10" width="125" height="20" rx="10" fill="none" stroke="#059669" stroke-width="1"/>
+    <text x="982" y="24" text-anchor="middle" class="pill" fill="#059669">&#x2713; FULL COVERAGE</text>
+
+    <line x1="15" y1="34" x2="1045" y2="34" stroke="#e2e8f0" stroke-width="0.5"/>
+    <line x1="340" y1="34" x2="340" y2="212" stroke="#e2e8f0" stroke-width="0.5"/>
+    <line x1="630" y1="34" x2="630" y2="212" stroke="#e2e8f0" stroke-width="0.5"/>
+
+    <!-- Col 1: OTEL Spec -->
+    <text x="15" y="52" class="spec-hdr">Seven instrument kinds:</text>
+    <text x="15" y="68" class="spec-dim">Synchronous:</text>
+    <text x="15" y="81" class="spec">&#x00B7; Counter &#x2014; monotonic up only (request count)</text>
+    <text x="15" y="94" class="spec">&#x00B7; UpDownCounter &#x2014; increase or decrease (queue depth)</text>
+    <text x="15" y="107" class="spec">&#x00B7; Gauge &#x2014; point-in-time snapshot (CPU %)</text>
+    <text x="15" y="120" class="spec">&#x00B7; Histogram &#x2014; value distribution with buckets (latency)</text>
+    <text x="15" y="140" class="spec-dim">Key features:</text>
+    <text x="15" y="153" class="spec">&#x00B7; Client-side aggregation (SDK computes before export)</text>
+    <text x="15" y="166" class="spec">&#x00B7; Exemplars: link a metric data point &#x2192; trace_id</text>
+    <text x="15" y="179" class="spec">&#x00B7; Histogram buckets: explicit or exponential (base2)</text>
+    <text x="15" y="205" class="spec-accent" fill="#ea580c">Wire: ExportMetricsServiceRequest (protobuf)</text>
+
+    <!-- Col 2: tracing crate -->
+    <text x="355" y="52" class="spec-hdr">No metrics concept</text>
+    <text x="355" y="70" class="spec">tracing provides spans and events.</text>
+    <text x="355" y="83" class="spec">Events can carry numeric fields:</text>
+    <text x="355" y="100" class="spec-dim" font-family="monospace">info!(value = 42.0, "measurement")</text>
+    <text x="355" y="120" class="spec-dim">But there is no semantic meaning.</text>
+    <text x="355" y="133" class="spec-dim">No counters. No gauges. No histograms.</text>
+    <text x="355" y="146" class="spec-dim">No aggregation. No temporality.</text>
+    <text x="355" y="173" class="spec-dim" font-style="italic">tracing was designed for diagnostics,</text>
+    <text x="355" y="186" class="spec-dim" font-style="italic">not quantitative measurement.</text>
+
+    <!-- Col 3: rolly -->
+    <text x="645" y="52" class="spec-hdr">Native OTLP metrics with client-side aggregation</text>
+    <text x="645" y="70" class="check" fill="#059669">&#x2713; Counter (monotonic, cumulative)</text>
+    <text x="645" y="83" class="check" fill="#059669">&#x2713; Gauge (last-value semantics)</text>
+    <text x="645" y="96" class="check" fill="#059669">&#x2713; Histogram (configurable bucket boundaries)</text>
+    <text x="645" y="109" class="check" fill="#059669">&#x2713; Client-side aggregation per attribute set</text>
+    <text x="645" y="122" class="check" fill="#059669">&#x2713; Automatic exemplar capture (trace_id + span_id)</text>
+    <text x="645" y="135" class="check" fill="#059669">&#x2713; Order-independent attribute hashing</text>
+    <text x="645" y="148" class="check" fill="#059669">&#x2713; ExportMetricsServiceRequest encoding</text>
+    <text x="645" y="161" class="check" fill="#059669">&#x2713; HTTP POST to /v1/metrics</text>
+    <text x="645" y="205" class="footer-text" fill="#059669">Standard-compliant OTLP protobuf</text>
+  </g>
+
+  <!-- ═══ ARCHITECTURE ═══ -->
+  <g transform="translate(0,740)">
+    <text x="550" y="18" text-anchor="middle" class="title">Architecture</text>
+    <line x1="20" y1="28" x2="1080" y2="28" stroke="#e2e8f0" stroke-width="1"/>
+
+    <defs>
+      <marker id="arr-orange" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+        <polygon points="0 0, 8 3, 0 6" fill="#ea580c"/>
+      </marker>
+      <marker id="arr-green" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+        <polygon points="0 0, 8 3, 0 6" fill="#059669"/>
+      </marker>
+      <marker id="arr-gray" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+        <polygon points="0 0, 8 3, 0 6" fill="#94a3b8"/>
+      </marker>
+    </defs>
+
+    <!-- Application Service -->
+    <g transform="translate(20,45)">
+      <rect width="300" height="200" rx="8" fill="#fff" stroke="#e2e8f0" stroke-width="1"/>
+      <rect width="300" height="4" rx="8" fill="#ea580c"/>
+      <text x="150" y="26" text-anchor="middle" class="arch-title" fill="#ea580c">Application Service</text>
+      <text x="150" y="42" text-anchor="middle" class="arch-sub">instrumented with rolly</text>
+
+      <line x1="15" y1="50" x2="285" y2="50" stroke="#e2e8f0" stroke-width="0.5"/>
+
+      <!-- Application layer -->
+      <rect x="15" y="58" width="270" height="32" rx="4" fill="#fff7ed" stroke="#fed7aa" stroke-width="0.5"/>
+      <text x="150" y="74" text-anchor="middle" class="arch-body">Application code</text>
+      <text x="150" y="85" text-anchor="middle" class="arch-sm">tracing::info_span!() &#x00B7; info!() &#x00B7; #[instrument]</text>
+
+      <!-- rolly layer -->
+      <rect x="15" y="98" width="270" height="44" rx="4" fill="#fff7ed" stroke="#fed7aa" stroke-width="0.5"/>
+      <text x="150" y="114" text-anchor="middle" class="arch-title" fill="#ea580c">rolly</text>
+      <text x="150" y="128" text-anchor="middle" class="arch-sm">OtlpLayer &#x2192; protobuf encoder &#x2192; HTTP exporter</text>
+      <text x="150" y="138" text-anchor="middle" class="arch-sm">+ JSON stderr (dual output)</text>
+
+      <!-- Signal outputs -->
+      <text x="15" y="162" class="arch-signal" fill="#2563eb">&#x2192; traces (ExportTraceServiceRequest)</text>
+      <text x="15" y="175" class="arch-signal" fill="#059669">&#x2192; logs (ExportLogsServiceRequest)</text>
+      <text x="15" y="188" class="arch-signal" fill="#ea580c">&#x2192; metrics (ExportMetricsServiceRequest)</text>
+    </g>
+
+    <!-- Arrows: Service &#x2192; Vector -->
+    <line x1="320" y1="115" x2="400" y2="115" stroke="#2563eb" stroke-width="1.5" marker-end="url(#arr-orange)"/>
+    <line x1="320" y1="135" x2="400" y2="135" stroke="#059669" stroke-width="1.5" marker-end="url(#arr-green)"/>
+    <line x1="320" y1="155" x2="400" y2="155" stroke="#ea580c" stroke-width="1.5" marker-end="url(#arr-orange)"/>
+    <text x="360" y="102" text-anchor="middle" class="arch-sm">OTLP HTTP</text>
+    <text x="360" y="112" text-anchor="middle" class="arch-sm">:4318</text>
+
+    <!-- Stderr fallback -->
+    <line x1="170" y1="245" x2="170" y2="272" stroke="#94a3b8" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#arr-gray)"/>
+    <g transform="translate(70,275)">
+      <rect width="200" height="28" rx="4" fill="#fff" stroke="#e2e8f0" stroke-width="0.5"/>
+      <text x="100" y="12" text-anchor="middle" class="arch-sm">CloudWatch (fallback)</text>
+      <text x="100" y="23" text-anchor="middle" class="footer">stderr JSON via log driver</text>
+    </g>
+
+    <!-- Vector -->
+    <g transform="translate(405,45)">
+      <rect width="300" height="200" rx="8" fill="#fff" stroke="#e2e8f0" stroke-width="1"/>
+      <rect width="300" height="4" rx="8" fill="#059669"/>
+      <text x="150" y="26" text-anchor="middle" class="arch-title" fill="#059669">Vector Aggregator</text>
+      <text x="150" y="42" text-anchor="middle" class="arch-sub">OTLP source &#x2192; decode &#x2192; route</text>
+
+      <line x1="15" y1="50" x2="285" y2="50" stroke="#e2e8f0" stroke-width="0.5"/>
+
+      <text x="15" y="66" class="arch-sm">Pipelines:</text>
+
+      <rect x="15" y="74" width="270" height="24" rx="4" fill="#eff6ff" stroke="#bfdbfe" stroke-width="0.5"/>
+      <text x="25" y="90" class="pipe-label" fill="#2563eb">traces &#x2192; parquet &#x2192; S3 traces/</text>
+
+      <rect x="15" y="104" width="270" height="24" rx="4" fill="#ecfdf5" stroke="#a7f3d0" stroke-width="0.5"/>
+      <text x="25" y="120" class="pipe-label" fill="#059669">logs &#x2192; parquet &#x2192; S3 logs/</text>
+
+      <rect x="15" y="134" width="270" height="24" rx="4" fill="#fff7ed" stroke="#fed7aa" stroke-width="0.5"/>
+      <text x="25" y="150" class="pipe-label" fill="#ea580c">metrics &#x2192; parquet &#x2192; S3 metrics/</text>
+
+      <text x="150" y="180" text-anchor="middle" class="arch-sm">All three signals use native OTLP protobuf</text>
+    </g>
+
+    <!-- Arrows: Vector &#x2192; S3 -->
+    <line x1="705" y1="105" x2="775" y2="105" stroke="#2563eb" stroke-width="1" marker-end="url(#arr-orange)"/>
+    <line x1="705" y1="130" x2="775" y2="130" stroke="#059669" stroke-width="1" marker-end="url(#arr-green)"/>
+    <line x1="705" y1="155" x2="775" y2="155" stroke="#ea580c" stroke-width="1" marker-end="url(#arr-orange)"/>
+    <text x="740" y="95" text-anchor="middle" class="arch-sm">Parquet</text>
+
+    <!-- S3 -->
+    <g transform="translate(780,45)">
+      <rect width="290" height="200" rx="8" fill="#fff" stroke="#e2e8f0" stroke-width="1"/>
+      <rect width="290" height="4" rx="8" fill="#d97706"/>
+      <text x="145" y="26" text-anchor="middle" class="arch-title" fill="#d97706">S3 Bucket</text>
+      <text x="145" y="42" text-anchor="middle" class="arch-sub">Apache Parquet format</text>
+
+      <line x1="15" y1="50" x2="275" y2="50" stroke="#e2e8f0" stroke-width="0.5"/>
+
+      <!-- Bucket paths -->
+      <rect x="15" y="60" width="80" height="38" rx="4" fill="#eff6ff" stroke="#bfdbfe" stroke-width="0.5"/>
+      <text x="55" y="78" text-anchor="middle" font="bold 11px monospace" fill="#2563eb">traces/</text>
+      <text x="55" y="92" text-anchor="middle" class="footer">OTLP spans</text>
+
+      <rect x="105" y="60" width="80" height="38" rx="4" fill="#ecfdf5" stroke="#a7f3d0" stroke-width="0.5"/>
+      <text x="145" y="78" text-anchor="middle" font="bold 11px monospace" fill="#059669">logs/</text>
+      <text x="145" y="92" text-anchor="middle" class="footer">OTLP logs</text>
+
+      <rect x="195" y="60" width="80" height="38" rx="4" fill="#fff7ed" stroke="#fed7aa" stroke-width="0.5"/>
+      <text x="235" y="78" text-anchor="middle" font="bold 11px monospace" fill="#ea580c">metrics/</text>
+      <text x="235" y="92" text-anchor="middle" class="footer">OTLP metrics</text>
+
+      <text x="145" y="125" text-anchor="middle" class="arch-sm">Queryable via DataFusion SQL</text>
+      <text x="145" y="138" text-anchor="middle" class="arch-sm">over Lambda Function URL</text>
+    </g>
+  </g>
+
+  <!-- ═══ FOOTER ═══ -->
+  <text x="550" y="1170" text-anchor="middle" class="footer">rolly &#x2014; github.com/l1x/rolly &#x2014; MIT OR Apache-2.0</text>
+  <text x="550" y="1185" text-anchor="middle" class="footer">OTLP spec: opentelemetry.io/docs/specs/otlp &#x00B7; tracing: docs.rs/tracing &#x00B7; Vector: vector.dev</text>
+</svg>

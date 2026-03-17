@@ -72,14 +72,14 @@
     <rect width="520" height="4" rx="4" fill="#ea580c"/>
     <text x="15" y="24" class="card-title" fill="#ea580c">TLA+ Concurrency Models</text>
 
-    <!-- specs/exporter.tla -->
-    <text x="15" y="46" class="file-hdr">specs/exporter.tla</text>
+    <!-- verification/specs/exporter.tla -->
+    <text x="15" y="46" class="file-hdr">verification/specs/exporter.tla</text>
     <circle cx="22" cy="58" r="2" fill="#ea580c"/><text x="30" y="62" class="item">Liveness</text><text x="160" y="62" class="desc">buffers eventually flush</text>
     <circle cx="22" cy="73" r="2" fill="#ea580c"/><text x="30" y="77" class="item">Boundedness</text><text x="160" y="77" class="desc">channel never exceeds capacity</text>
     <circle cx="22" cy="88" r="2" fill="#ea580c"/><text x="30" y="92" class="item">No deadlock</text><text x="160" y="92" class="desc">flush and shutdown always complete</text>
 
-    <!-- specs/metrics_registry.tla -->
-    <text x="15" y="114" class="file-hdr">specs/metrics_registry.tla</text>
+    <!-- verification/specs/metrics_registry.tla -->
+    <text x="15" y="114" class="file-hdr">verification/specs/metrics_registry.tla</text>
     <circle cx="22" cy="126" r="2" fill="#ea580c"/><text x="30" y="130" class="item">No deadlock</text><text x="160" y="130" class="desc">concurrent write + collect</text>
     <circle cx="22" cy="141" r="2" fill="#ea580c"/><text x="30" y="145" class="item">Liveness</text><text x="160" y="145" class="desc">collect() returns without blocking</text>
     <circle cx="22" cy="156" r="2" fill="#ea580c"/><text x="30" y="160" class="item">Completeness</text><text x="160" y="160" class="desc">snapshot sees all instruments</text>
