@@ -8,6 +8,7 @@ repository = "https://github.com/l1x/rolly"
 keywords = ["observability", "tracing", "otlp", "telemetry", "protobuf"]
 categories = ["development-tools::debugging", "development-tools::profiling"]
 readme = "README.md"
+exclude = [".agent-prompts/", ".claude/", "docs/prds/", "docker-compose.e2e.yaml", "mise.toml"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
