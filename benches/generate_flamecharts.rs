@@ -332,7 +332,8 @@ fn render_comparison_table_svg(groups: &[BenchmarkGroup]) {
     let _ = writeln!(
         s,
         "<rect x=\"0\" y=\"{}\" width=\"{}\" height=\"2\" fill=\"#ea580c\"/>",
-        table_top + 2.0, total_w
+        table_top + 2.0,
+        total_w
     );
 
     // Title

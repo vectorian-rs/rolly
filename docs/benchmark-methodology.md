@@ -13,8 +13,8 @@ Establish a repeatable performance measurement framework for a Rust library or s
 ```
 benches/realistic_scenario.rs   ← Criterion benchmarks simulating real traffic
 benches/baseline.toml           ← Committed measured results (diffable in PRs)
-tools/render_baseline.rs        ← Reads TOML → renders SVG via plotters
-docs/illustration/performance.svg ← Self-contained 4-panel visualization
+tools/render_baseline.rs        ← Reads TOML → renders hand-crafted SVG table
+docs/illustration/performance.svg ← Self-contained performance table
 ```
 
 ## Step 1: Define the Workload Scenario

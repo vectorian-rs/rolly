@@ -1,0 +1,138 @@
+<svg viewBox="0 0 1100 350" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    .title { font: bold 16px monospace; fill: #1e293b; }
+    .box-title { font: bold 12px monospace; }
+    .box-sub { font: 10px system-ui, -apple-system, sans-serif; fill: #94a3b8; }
+    .box-body { font: 10px system-ui, -apple-system, sans-serif; fill: #1e293b; }
+    .box-sm { font: 9px system-ui, -apple-system, sans-serif; fill: #64748b; }
+    .signal { font: 9px monospace; }
+    .pipe-label { font: 10px monospace; }
+    .arrow-label { font: 9px system-ui, -apple-system, sans-serif; fill: #64748b; }
+    .footer { font: 10px system-ui, -apple-system, sans-serif; fill: #94a3b8; }
+  </style>
+
+  <!-- Canvas -->
+  <rect width="1100" height="350" fill="#fafafa"/>
+
+  <!-- Surface card -->
+  <rect x="16" y="12" width="1068" height="326" rx="8" fill="#ffffff" stroke="#e2e8f0" stroke-width="1"/>
+  <rect x="16" y="12" width="1068" height="4" rx="8" fill="#ea580c"/>
+
+  <!-- Title -->
+  <text x="550" y="38" text-anchor="middle" class="title">Architecture</text>
+  <line x1="32" y1="48" x2="1068" y2="48" stroke="#e2e8f0" stroke-width="1"/>
+
+  <!-- Arrow markers -->
+  <defs>
+    <marker id="arr-blue" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#2563eb"/>
+    </marker>
+    <marker id="arr-green" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#059669"/>
+    </marker>
+    <marker id="arr-orange" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#ea580c"/>
+    </marker>
+    <marker id="arr-gray" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#94a3b8"/>
+    </marker>
+  </defs>
+
+  <!-- ── Application Service ── -->
+  <g transform="translate(32,62)">
+    <rect width="300" height="200" rx="8" fill="#fff" stroke="#e2e8f0" stroke-width="1"/>
+    <rect width="300" height="4" rx="8" fill="#ea580c"/>
+    <text x="150" y="26" text-anchor="middle" class="box-title" fill="#ea580c">Application Service</text>
+    <text x="150" y="42" text-anchor="middle" class="box-sub">instrumented with rolly</text>
+
+    <line x1="15" y1="50" x2="285" y2="50" stroke="#e2e8f0" stroke-width="0.5"/>
+
+    <!-- Application layer -->
+    <rect x="15" y="58" width="270" height="30" rx="4" fill="#fff7ed" stroke="#fed7aa" stroke-width="0.5"/>
+    <text x="150" y="74" text-anchor="middle" class="box-body">Application code</text>
+    <text x="150" y="84" text-anchor="middle" class="box-sm">tracing::info_span!() &#x00B7; info!() &#x00B7; #[instrument]</text>
+
+    <!-- rolly layer -->
+    <rect x="15" y="96" width="270" height="40" rx="4" fill="#fff7ed" stroke="#fed7aa" stroke-width="0.5"/>
+    <text x="150" y="112" text-anchor="middle" class="box-title" fill="#ea580c">rolly</text>
+    <text x="150" y="126" text-anchor="middle" class="box-sm">OtlpLayer &#x2192; protobuf encoder &#x2192; HTTP exporter</text>
+
+    <!-- Signal outputs -->
+    <text x="15" y="156" class="signal" fill="#2563eb">&#x2192; traces (ExportTraceServiceRequest)</text>
+    <text x="15" y="170" class="signal" fill="#059669">&#x2192; logs (ExportLogsServiceRequest)</text>
+    <text x="15" y="184" class="signal" fill="#ea580c">&#x2192; metrics (ExportMetricsServiceRequest)</text>
+  </g>
+
+  <!-- Arrows: Service &#x2192; Vector -->
+  <line x1="332" y1="132" x2="412" y2="132" stroke="#2563eb" stroke-width="1.5" marker-end="url(#arr-blue)"/>
+  <line x1="332" y1="152" x2="412" y2="152" stroke="#059669" stroke-width="1.5" marker-end="url(#arr-green)"/>
+  <line x1="332" y1="172" x2="412" y2="172" stroke="#ea580c" stroke-width="1.5" marker-end="url(#arr-orange)"/>
+  <text x="372" y="120" text-anchor="middle" class="arrow-label">OTLP HTTP</text>
+  <text x="372" y="130" text-anchor="middle" class="arrow-label">:4318</text>
+
+  <!-- stderr fallback -->
+  <line x1="182" y1="262" x2="182" y2="288" stroke="#94a3b8" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#arr-gray)"/>
+  <g transform="translate(82,290)">
+    <rect width="200" height="26" rx="4" fill="#fff" stroke="#e2e8f0" stroke-width="0.5"/>
+    <text x="100" y="12" text-anchor="middle" class="box-sm">CloudWatch (fallback)</text>
+    <text x="100" y="22" text-anchor="middle" class="footer">stderr JSON via log driver</text>
+  </g>
+
+  <!-- ── Vector Aggregator ── -->
+  <g transform="translate(417,62)">
+    <rect width="300" height="200" rx="8" fill="#fff" stroke="#e2e8f0" stroke-width="1"/>
+    <rect width="300" height="4" rx="8" fill="#059669"/>
+    <text x="150" y="26" text-anchor="middle" class="box-title" fill="#059669">Vector Aggregator</text>
+    <text x="150" y="42" text-anchor="middle" class="box-sub">OTLP source &#x2192; decode &#x2192; route</text>
+
+    <line x1="15" y1="50" x2="285" y2="50" stroke="#e2e8f0" stroke-width="0.5"/>
+
+    <text x="15" y="66" class="box-sm">Pipelines:</text>
+
+    <rect x="15" y="74" width="270" height="24" rx="4" fill="#eff6ff" stroke="#bfdbfe" stroke-width="0.5"/>
+    <text x="25" y="90" class="pipe-label" fill="#2563eb">traces &#x2192; parquet &#x2192; S3 traces/</text>
+
+    <rect x="15" y="104" width="270" height="24" rx="4" fill="#ecfdf5" stroke="#a7f3d0" stroke-width="0.5"/>
+    <text x="25" y="120" class="pipe-label" fill="#059669">logs &#x2192; parquet &#x2192; S3 logs/</text>
+
+    <rect x="15" y="134" width="270" height="24" rx="4" fill="#fff7ed" stroke="#fed7aa" stroke-width="0.5"/>
+    <text x="25" y="150" class="pipe-label" fill="#ea580c">metrics &#x2192; parquet &#x2192; S3 metrics/</text>
+
+    <text x="150" y="180" text-anchor="middle" class="box-sm">All three signals use native OTLP protobuf</text>
+  </g>
+
+  <!-- Arrows: Vector &#x2192; S3 -->
+  <line x1="717" y1="122" x2="787" y2="122" stroke="#2563eb" stroke-width="1" marker-end="url(#arr-blue)"/>
+  <line x1="717" y1="147" x2="787" y2="147" stroke="#059669" stroke-width="1" marker-end="url(#arr-green)"/>
+  <line x1="717" y1="172" x2="787" y2="172" stroke="#ea580c" stroke-width="1" marker-end="url(#arr-orange)"/>
+  <text x="752" y="112" text-anchor="middle" class="arrow-label">Parquet</text>
+
+  <!-- ── S3 Bucket ── -->
+  <g transform="translate(792,62)">
+    <rect width="280" height="200" rx="8" fill="#fff" stroke="#e2e8f0" stroke-width="1"/>
+    <rect width="280" height="4" rx="8" fill="#d97706"/>
+    <text x="140" y="26" text-anchor="middle" class="box-title" fill="#d97706">S3 Bucket</text>
+    <text x="140" y="42" text-anchor="middle" class="box-sub">Apache Parquet format</text>
+
+    <line x1="15" y1="50" x2="265" y2="50" stroke="#e2e8f0" stroke-width="0.5"/>
+
+    <!-- Bucket paths -->
+    <rect x="15" y="60" width="75" height="38" rx="4" fill="#eff6ff" stroke="#bfdbfe" stroke-width="0.5"/>
+    <text x="52" y="78" text-anchor="middle" font="bold 11px monospace" fill="#2563eb">traces/</text>
+    <text x="52" y="92" text-anchor="middle" class="footer">OTLP spans</text>
+
+    <rect x="100" y="60" width="75" height="38" rx="4" fill="#ecfdf5" stroke="#a7f3d0" stroke-width="0.5"/>
+    <text x="137" y="78" text-anchor="middle" font="bold 11px monospace" fill="#059669">logs/</text>
+    <text x="137" y="92" text-anchor="middle" class="footer">OTLP logs</text>
+
+    <rect x="185" y="60" width="80" height="38" rx="4" fill="#fff7ed" stroke="#fed7aa" stroke-width="0.5"/>
+    <text x="225" y="78" text-anchor="middle" font="bold 11px monospace" fill="#ea580c">metrics/</text>
+    <text x="225" y="92" text-anchor="middle" class="footer">OTLP metrics</text>
+
+    <text x="140" y="122" text-anchor="middle" class="box-sm">Queryable via DataFusion SQL</text>
+    <text x="140" y="135" text-anchor="middle" class="box-sm">over Lambda Function URL</text>
+  </g>
+
+  <!-- Footer -->
+  <text x="550" y="332" text-anchor="middle" class="footer">rolly &#x2014; github.com/l1x/rolly</text>
+</svg>

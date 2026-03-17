@@ -528,8 +528,16 @@ fn render_svg(scenarios: &[ScenarioResults]) {
     let accent = "#ea580c";
 
     let mut svg = String::with_capacity(4096);
-    writeln!(svg, "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}\" height=\"{svg_h}\">").unwrap();
-    writeln!(svg, "<rect width=\"{w}\" height=\"{svg_h}\" fill=\"#fafafa\"/>").unwrap();
+    writeln!(
+        svg,
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}\" height=\"{svg_h}\">"
+    )
+    .unwrap();
+    writeln!(
+        svg,
+        "<rect width=\"{w}\" height=\"{svg_h}\" fill=\"#fafafa\"/>"
+    )
+    .unwrap();
 
     // Title
     writeln!(svg, "<text x=\"{}\" y=\"35\" font-size=\"18\" font-weight=\"bold\" text-anchor=\"middle\" fill=\"{text_color}\" font-family=\"monospace\">Allocation Scaling &#x2014; rolly vs OTel (N = 10,000)</text>", w / 2).unwrap();
@@ -539,7 +547,12 @@ fn render_svg(scenarios: &[ScenarioResults]) {
     writeln!(svg, "<rect x=\"{table_x}\" y=\"{table_y}\" width=\"{table_w}\" height=\"{table_h}\" fill=\"{white}\" stroke=\"{border}\" stroke-width=\"1\" rx=\"4\"/>").unwrap();
     // Accent line at top
     writeln!(svg, "<rect x=\"{table_x}\" y=\"{table_y}\" width=\"{table_w}\" height=\"4\" fill=\"{accent}\" rx=\"4\"/>").unwrap();
-    writeln!(svg, "<rect x=\"{table_x}\" y=\"{}\" width=\"{table_w}\" height=\"2\" fill=\"{accent}\"/>", table_y + 2).unwrap();
+    writeln!(
+        svg,
+        "<rect x=\"{table_x}\" y=\"{}\" width=\"{table_w}\" height=\"2\" fill=\"{accent}\"/>",
+        table_y + 2
+    )
+    .unwrap();
 
     // --- Header row 1: merged group headers ---
     let hy = table_y;

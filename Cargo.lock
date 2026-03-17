@@ -1577,7 +1577,6 @@ dependencies = [
  "opentelemetry-proto",
  "opentelemetry_sdk",
  "pin-project-lite",
- "plotters",
  "proptest",
  "prost",
  "rand",

@@ -141,9 +141,7 @@ rolly = { version = "0.9", default-features = false }
 
 ## Pipeline
 
-```
-Application (tracing) → rolly (protobuf) → HTTP POST → Vector/Collector (OTLP) → storage
-```
+![Architecture](docs/illustration/architecture.svg)
 
 ## Why not OpenTelemetry SDK?
 
