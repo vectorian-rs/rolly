@@ -1,6 +1,6 @@
 # How We Made rolly 3x Faster Than OpenTelemetry SDK
 
-A chronicle of profiling, bottleneck hunting, and surgical optimization on the metrics hot path.
+A chronicle of profiling, bottleneck hunting, and surgical optimization on the metrics hot path — plus how we verified correctness with formal methods before shipping v0.9.0.
 
 ## The Starting Point
 
@@ -173,6 +173,158 @@ OTel's main cost is hashing and comparing `KeyValue` structs, which are heap-all
 
 No shell scripts. No Python. The entire pipeline is `cargo bench --features _bench`.
 
+## Proving the Hot Path Never Blocks
+
+Fast is meaningless if telemetry stalls your request handlers. The exporter uses a bounded `tokio::mpsc` channel and `try_send()` — if the channel is full, the message is dropped and an atomic counter increments. The application thread never waits.
+
+This is now configurable via `BackpressureStrategy`:
+
+```rust
+let _guard = init(TelemetryConfig {
+    // ...
+    backpressure_strategy: rolly::BackpressureStrategy::Drop,
+});
+```
+
+Today `Drop` is the only variant. The enum is extensible — `Block`, `DropOldest`, or `SampleDown` could be added without breaking the API.
+
+We wrote two stress tests to prove the design holds under pressure:
+
+**P99 latency stays bounded.** Fill the channel to capacity, then measure 5,000 individual span emissions. In release mode, p99 latency is ~6.6 µs — the `try_send` failure path (atomic increment + return) is as fast as the success path.
+
+**No thread starvation.** Eight threads each emit 2,000 spans against a channel of capacity 4 (intentionally tiny). The slowest thread finishes within 1.4× of the fastest. No thread is starved — the contention is symmetric.
+
+The drop counter is exposed via `rolly::telemetry_dropped_total()`, so operators can alert on sustained backpressure.
+
+## Formal Verification
+
+Performance optimization is half the story. The other half is confidence that the code is correct — not just "passes tests" correct, but "cannot violate its invariants for any input" correct.
+
+We applied four complementary verification tools, each targeting a different class of bug:
+
+### Kani Model Checking — 19 Proof Harnesses
+
+[Kani](https://model-checking.github.io/kani/) is a model checker for Rust that uses bounded model checking (CBMC) to exhaustively verify properties over all possible inputs within a bound.
+
+We wrote 19 proof harnesses across four source files:
+
+**`src/proto.rs`** (11 harnesses) — the hand-rolled protobuf encoder is the most critical code in rolly. Every byte must be correct or collectors reject the payload. Proofs verify:
+- `encode_varint` never panics for any `u64` value
+- Encoded varints are at most 10 bytes (the protocol maximum)
+- `encode_tag` never panics for any field number and wire type
+- Zero-value varint fields produce empty output (proto3 default elision)
+- Non-zero varint fields always produce non-empty output
+- Empty bytes fields are no-ops
+- Fixed64 fields are always exactly 8 bytes + tag
+- Packed repeated fields handle empty slices
+- `encode_message_field_in_place` never panics
+
+**`src/trace_id.rs`** (1 harness) — proves `hex_encode` always produces output of length `2 × input.len()`.
+
+**`src/otlp_layer.rs`** (3 harnesses) — proves the sampling decision function and hex encoding/decoding:
+- `should_sample` never panics for any trace_id and any rate in `[0.0, 1.0]`
+- `hex_nibble` produces valid hex for all 256 byte values
+- `hex_to_bytes_16` rejects inputs that aren't exactly 32 characters
+
+**`src/metrics.rs`** (4 harnesses) — proves the attribute hashing and histogram bucket logic:
+- `attrs_hash` never panics for any attribute slice
+- Hash is order-independent (commutativity of `wrapping_add`)
+- Empty attributes hash to zero
+- Histogram `partition_point` always returns a valid bucket index
+
+### TLA+ Specifications — 2 Concurrency Models
+
+Kani verifies sequential code. For concurrent behavior — channels, shared state, flush/shutdown ordering — we wrote TLA+ specifications.
+
+**`specs/exporter.tla`** models the exporter channel:
+- **Liveness:** buffers eventually flush (no telemetry is silently lost while the channel has capacity)
+- **Boundedness:** the channel never exceeds its configured capacity
+- **No deadlock:** flush and shutdown operations always complete
+
+**`specs/metrics_registry.tla`** models the metrics aggregation loop:
+- **No deadlock:** concurrent `write` + `collect` operations interleave safely
+- **Liveness:** `collect()` returns without blocking
+- **Completeness:** a snapshot sees all registered instruments
+- **Progress:** the aggregation loop advances every flush interval
+- **Bounded size:** memory is proportional to instruments, not observations
+
+TLC model-checked both specs exhaustively over the configured state space.
+
+### Property-Based Tests — 9 Proptests
+
+Kani proves properties within bounds. Proptest generates thousands of random inputs to catch edge cases in practice — long strings, empty collections, extreme numeric values.
+
+Six proptests verify protobuf encoding roundtrips: varint fields produce valid tag/value pairs, zero varints are skipped (proto3 elision), string and bytes fields survive encode-then-decode, `encode_message_field_in_place` matches the allocating `encode_message_field`, and string fields work with arbitrary field numbers.
+
+Three more proptests cover higher-level encoding: `encode_export_trace_request` and `encode_export_logs_request` never panic for arbitrary span/log data, and `hex_to_bytes_16` round-trips correctly.
+
+### Fuzz Targets — 3 cargo-fuzz Harnesses
+
+Proptests use structured generation. Fuzz targets (`cargo-fuzz` / libfuzzer) throw truly arbitrary bytes at the encoders:
+
+- `fuzz_encode_trace` — arbitrary bytes → `SpanData` → `encode_export_trace_request`
+- `fuzz_encode_logs` — arbitrary bytes → `LogData` → `encode_export_logs_request`
+- `fuzz_hex_to_bytes_16` — arbitrary `&str` → `hex_to_bytes_16`
+
+These run as part of CI and have been exercised for millions of iterations without finding panics.
+
+### Coverage Map
+
+![Verification coverage](illustration/verification-coverage.svg)
+
+## End-to-End Testing with Vector
+
+Unit tests and proofs verify components in isolation. The e2e test verifies the entire pipeline: application → rolly → HTTP POST → collector → parsed output.
+
+We use [Vector](https://vector.dev/) as the OTLP collector. Vector receives OTLP over HTTP, and writes traces, logs, and metrics as newline-delimited JSON to files. The test reads those files and asserts on content.
+
+```yaml
+# tests/vector-e2e.yaml
+sources:
+  otel:
+    type: opentelemetry
+    http:
+      address: "0.0.0.0:4318"
+
+sinks:
+  traces_file:
+    type: file
+    inputs: ["otel.traces"]
+    path: "/tmp/vector-output/traces.json"
+    encoding:
+      codec: json
+```
+
+The test (`tests/vector_e2e.rs`):
+1. Health-checks Vector at `localhost:4318`
+2. Sends traces with a known span name, attributes, and `service.name`
+3. Sends logs with a known message body correlated to a trace
+4. Sends metrics (counter + gauge) with known values
+5. Reads the NDJSON output files with retry (Vector writes asynchronously)
+6. Asserts that the received data matches what was sent — field by field
+
+```sh
+docker compose -f docker-compose.e2e.yaml up -d
+cargo test --features _bench --release --test vector_e2e -- --ignored --nocapture
+docker compose -f docker-compose.e2e.yaml down -v
+```
+
+This catches integration bugs that unit tests cannot: incorrect Content-Type headers, protobuf encoding errors that produce valid bytes but wrong semantics, endpoint routing mistakes, and serialization of resource attributes.
+
+## Road to v1.0
+
+rolly v0.9.0 is feature-complete:
+- Traces, logs, and metrics over OTLP HTTP protobuf
+- Probabilistic head-based sampling, deterministic by trace_id
+- Non-blocking export with configurable backpressure
+- Automatic exemplar capture linking metrics to traces
+- Tower middleware for Axum with RED metrics and W3C traceparent propagation
+- 19 Kani proofs, 2 TLA+ specs, 9 proptests, 3 fuzz targets
+- E2e tests against Vector validating the full pipeline
+- 3x faster than OpenTelemetry SDK on the metrics hot path
+
+v0.9.0 is being deployed in production services. Once we've validated that telemetry arrives correctly under real traffic patterns — varied attribute cardinalities, sustained throughput, multi-service trace correlation — we'll cut v1.0.0.
+
 ## Lessons
 
 1. **Profile before guessing.** The exemplar tax was invisible in code review — `capture_exemplar()` looks cheap until you realize `Span::current()` touches a thread-local on every call.
@@ -182,3 +334,7 @@ No shell scripts. No Python. The entire pipeline is `cargo bench --features _ben
 3. **Don't hash your hashes.** When HashMap keys are already well-distributed hashes, the default SipHash is pure overhead. An identity hasher is safe and free.
 
 4. **Flamecharts don't lie.** The "after" flamechart showing 76% mutex lock/unlock is the best possible outcome — it means everything else was optimized away, and the remaining cost is the irreducible synchronization primitive.
+
+5. **Prove what tests can't.** Tests check examples. Kani checks all inputs within bounds. TLA+ checks all interleavings. Proptest generates the edge cases you wouldn't think to write. Fuzz targets find the inputs nobody imagined. Each tool catches a different class of bug — use all four.
+
+6. **Non-blocking or nothing.** Telemetry that can block your application under load is worse than no telemetry. `try_send` + atomic drop counter is the right primitive — the overhead is measurable (6.6 µs p99 under full backpressure), operators can alert on drops, and the application never stalls.

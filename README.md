@@ -136,7 +136,7 @@ To disable Tower middleware (e.g. for non-HTTP applications):
 
 ```toml
 [dependencies]
-rolly = { version = "0.5", default-features = false }
+rolly = { version = "0.9", default-features = false }
 ```
 
 ## Pipeline
