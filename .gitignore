@@ -1,1 +1,5 @@
 /target
+
+# Beads and agent prompts
+.beads/
+.agent-prompts/
