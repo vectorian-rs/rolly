@@ -191,4 +191,4 @@ Benchmarks simulate realistic e-commerce API traffic. See [benches/baseline.toml
 
 ## License
 
-MIT OR Apache-2.0
+MIT

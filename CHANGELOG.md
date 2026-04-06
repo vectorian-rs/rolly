@@ -8,14 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-
 - Custom `resource_attributes` field on `TelemetryConfig` for user-defined OTLP resource key-value pairs
 - Test verifying custom resource attributes appear in exported trace protobuf
 
-## [0.9.0] - 2025-04-15
+## [0.9.0] - 2026-03-17
 
 ### Added
-
 - Configurable `BackpressureStrategy` (drop / block) for the exporter
 - Vector-based end-to-end integration tests
 - TLA+ formal specifications for exporter and metrics registry
@@ -26,25 +24,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Verification coverage SVG diagram
 
 ### Changed
-
 - Consolidated project layout and applied diagram design system
 - Replaced plotters dependency with hand-crafted SVG for architecture diagram
 - Excluded non-essential files (`.agent-prompts/`, `.claude/`, `docs/prds/`) from crate package
 
 ### Fixed
-
 - Tightened Kani proof harness bounds for tractable verification
 
-## [0.5.1] - 2025-03-20
+## [0.5.1] - 2026-03-10
 
 ### Changed
-
 - Updated crates.io README
 
-## [0.5.0] - 2025-03-19
+## [0.5.0] - 2026-03-10
 
 ### Added
-
 - Histogram instrument with client-side bucketing
 - Exemplar support on Counter, Gauge, and Histogram
 - Realistic e-commerce benchmark suite
@@ -56,54 +50,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Baseline and diff flamechart generation
 
 ### Changed
-
 - **Breaking:** `TelemetryConfig` fields now accept `String` instead of `&'static str`
 - Renamed crate from `ro11y` to `rolly`
 - Moved benchmark-methodology.md to `docs/`
 - Use Criterion as single source of truth for benchmark methodology
 
-## [0.4.0] - 2025-03-15
+## [0.4.0] - 2026-03-08
 
 ### Added
-
 - Deterministic head-based trace sampling with configurable `sampling_rate`
 - Kani proofs, proptest, and wire-compatibility test infrastructure
 
-## [0.3.0] - 2025-03-12
+## [0.3.0] - 2026-03-07
 
 ### Added
-
 - Native OTLP metrics with Counter and Gauge instruments
 - Metrics benchmarks for encoding, counter/gauge ops, and collect
 - Proto/trace/log encoding benchmarks
 
 ### Changed
-
 - **Breaking:** metrics encoding uses hand-rolled protobuf (no `prost` at runtime)
 
-## [0.2.0] - 2025-03-10
+## [0.2.0] - 2026-03-07
 
 ### Changed
-
 - **Breaking:** independent trace and log export configuration — separate endpoint URLs for traces and logs
 
-## [0.1.3] - 2025-03-08
+## [0.1.3] - 2026-03-06
 
 ### Added
-
 - Shared field/metric constants module
 - Tower middleware feature-gated behind `cfg(feature = "tower")`
 
 ### Changed
-
 - Renamed `cf_id` to `request_id` and made `hex_encode` public
 
-## [0.1.0] - 2025-03-05
+## [0.1.0] - 2026-03-05
 
 ### Added
-
 - Initial release of the rolly observability crate
 - Hand-rolled OTLP protobuf encoding for traces and logs over HTTP
 - `tracing`-based `OtlpLayer` subscriber
 - Async batch exporter with configurable endpoints
 - crates.io packaging and metadata
+
+[Unreleased]: https://github.com/vectorian-rs/rolly/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/vectorian-rs/rolly/compare/v0.5.1...v0.9.0
+[0.5.1]: https://github.com/vectorian-rs/rolly/compare/v0.5.0...v0.5.1
+[0.5.0]: https://github.com/vectorian-rs/rolly/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/vectorian-rs/rolly/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/vectorian-rs/rolly/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/vectorian-rs/rolly/compare/v0.1.3...v0.2.0
+[0.1.3]: https://github.com/vectorian-rs/rolly/compare/v0.1.0...v0.1.3
+[0.1.0]: https://github.com/vectorian-rs/rolly/releases/tag/v0.1.0
