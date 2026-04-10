@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-04-10
+
+### Changed
+- **rolly-monoio:** HTTP transport switched from raw TCP to `ureq` — adds TLS support (rustls)
+- **rolly-monoio:** HTTP POSTs now run on spawned OS threads, keeping the monoio event loop responsive
+- **rolly-monoio:** `flush()` / `shutdown()` wait for all in-flight POSTs before completing
+
+### Removed
+- **rolly-monoio: Breaking:** `StartError` removed — `Exporter::start()` now returns `Self` directly (URL validation happens at POST time via ureq)
+
 ## [0.13.0] - 2026-04-10
 
 ### Added
@@ -158,7 +168,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Async batch exporter with configurable endpoints
 - crates.io packaging and metadata
 
-[Unreleased]: https://github.com/vectorian-rs/rolly/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/vectorian-rs/rolly/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/vectorian-rs/rolly/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/vectorian-rs/rolly/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/vectorian-rs/rolly/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/vectorian-rs/rolly/compare/v0.9.0...v0.11.0

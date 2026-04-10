@@ -16,7 +16,7 @@ default = []
 _bench = ["rolly/_bench"]
 
 [dependencies]
-rolly = { path = "../rolly", version = "=0.13.0" }
+rolly = { path = "../rolly", version = "=0.14.0" }
 bytes = "1"
 crossbeam-channel = "0.5"
 monoio = { version = "0.2", features = ["macros", "sync"] }
@@ -25,5 +25,5 @@ tracing-subscriber = { version = "0.3", features = ["json", "env-filter", "regis
 ureq = "3"
 
 [dev-dependencies]
-rolly = { path = "../rolly", version = "=0.13.0", features = ["_bench"] }
+rolly = { path = "../rolly", version = "=0.14.0", features = ["_bench"] }
 monoio = { version = "0.2", features = ["macros", "sync"] }
