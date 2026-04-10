@@ -23,7 +23,7 @@ fn make_dispatch(
 ) {
     let (exporter, rx) = Exporter::start_test_with_capacity(capacity, strategy);
     let layer = OtlpLayer::new(OtlpLayerConfig {
-        exporter,
+        sink: std::sync::Arc::new(exporter),
         service_name: "bp-test",
         service_version: "0.0.1",
         environment: "test",

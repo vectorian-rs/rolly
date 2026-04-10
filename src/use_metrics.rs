@@ -4,10 +4,79 @@
 /// at a configurable interval. No-op on non-Linux platforms.
 use std::time::Duration;
 
+/// Stateful baseline for USE metrics polling.
+///
+/// Carries the previous CPU sample needed to compute utilization as a delta.
+/// The first successful poll establishes the baseline; CPU utilization is
+/// emitted starting on the second poll.
+#[derive(Default)]
+pub struct UseMetricsState {
+    #[cfg(target_os = "linux")]
+    prev_cpu_ticks: Option<u64>,
+    #[cfg(target_os = "linux")]
+    prev_instant: Option<std::time::Instant>,
+}
+
+/// Poll USE metrics once.
+///
+/// Reads `/proc/self/stat` and `/proc/self/statm` synchronously, updates
+/// `state`, and emits metric-shaped `tracing::info!` events. The caller
+/// owns scheduling.
+///
+/// Only meaningful on Linux; returns immediately on other platforms.
+pub(crate) fn poll_once(state: &mut UseMetricsState) {
+    #[cfg(target_os = "linux")]
+    {
+        poll_once_linux(state);
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = state;
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn poll_once_linux(state: &mut UseMetricsState) {
+    let now = std::time::Instant::now();
+    let page_size = page_size_bytes();
+    let clock_ticks = clock_ticks_per_sec();
+
+    if let Some((utime, stime)) = read_cpu_ticks() {
+        let total_ticks = utime + stime;
+        if let (Some(prev_ticks), Some(prev_instant)) = (state.prev_cpu_ticks, state.prev_instant) {
+            let elapsed_secs = now.duration_since(prev_instant).as_secs_f64();
+            let delta_ticks = total_ticks.saturating_sub(prev_ticks);
+            let cpu_seconds = delta_ticks as f64 / clock_ticks as f64;
+            let utilization = if elapsed_secs > 0.0 {
+                cpu_seconds / elapsed_secs
+            } else {
+                0.0
+            };
+
+            tracing::info!(
+                metric = "process.cpu.utilization",
+                r#type = "gauge",
+                value = utilization,
+            );
+        }
+        state.prev_cpu_ticks = Some(total_ticks);
+        state.prev_instant = Some(now);
+    }
+
+    if let Some(rss_pages) = read_rss_pages() {
+        let rss_bytes = rss_pages * page_size;
+        tracing::info!(
+            metric = "process.memory.usage",
+            r#type = "gauge",
+            value = rss_bytes,
+        );
+    }
+}
+
 /// Start the USE metrics polling loop.
 ///
-/// Spawns a background tokio task that reads `/proc/self/stat` and `/proc/self/statm`
-/// every `interval` and emits metric events via `tracing::info!`.
+/// Spawns a background tokio task that calls `poll_once` every `interval`.
 ///
 /// On non-Linux platforms this is a no-op.
 pub(crate) fn start(interval: Duration) {
@@ -25,52 +94,14 @@ pub(crate) fn start(interval: Duration) {
 
 #[cfg(target_os = "linux")]
 async fn poll_loop(interval: Duration) {
-    use tokio::time;
-
-    let page_size = page_size_bytes();
-    let clock_ticks = clock_ticks_per_sec();
-    let mut prev_cpu_ticks: Option<u64> = None;
-    let mut prev_instant = time::Instant::now();
-
-    let mut ticker = time::interval(interval);
+    let mut state = UseMetricsState::default();
+    let mut ticker = tokio::time::interval(interval);
     // First tick fires immediately — skip it to get a baseline.
     ticker.tick().await;
 
     loop {
         ticker.tick().await;
-
-        let now = time::Instant::now();
-        let elapsed_secs = now.duration_since(prev_instant).as_secs_f64();
-        prev_instant = now;
-
-        if let Some((utime, stime)) = read_cpu_ticks() {
-            let total_ticks = utime + stime;
-            if let Some(prev) = prev_cpu_ticks {
-                let delta_ticks = total_ticks.saturating_sub(prev);
-                let cpu_seconds = delta_ticks as f64 / clock_ticks as f64;
-                let utilization = if elapsed_secs > 0.0 {
-                    cpu_seconds / elapsed_secs
-                } else {
-                    0.0
-                };
-
-                tracing::info!(
-                    metric = "process.cpu.utilization",
-                    r#type = "gauge",
-                    value = utilization,
-                );
-            }
-            prev_cpu_ticks = Some(total_ticks);
-        }
-
-        if let Some(rss_pages) = read_rss_pages() {
-            let rss_bytes = rss_pages * page_size;
-            tracing::info!(
-                metric = "process.memory.usage",
-                r#type = "gauge",
-                value = rss_bytes,
-            );
-        }
+        poll_once(&mut state);
     }
 }
 
@@ -114,15 +145,16 @@ mod tests {
 
     #[test]
     fn start_is_noop_on_non_linux() {
-        // Should not panic on any platform.
-        // On non-Linux, this is a no-op. On Linux without a runtime, it would
-        // panic — but tests run with #[tokio::test] when needed.
         #[cfg(not(target_os = "linux"))]
         {
-            // Can't call start() without a tokio runtime, but we can verify
-            // the function signature exists.
             let _f: fn(Duration) = start;
         }
+    }
+
+    #[test]
+    fn poll_once_does_not_panic() {
+        let mut state = UseMetricsState::default();
+        poll_once(&mut state);
     }
 
     #[cfg(target_os = "linux")]
@@ -134,7 +166,6 @@ mod tests {
             "/proc/self/stat should be readable on Linux"
         );
         let (utime, stime) = result.unwrap();
-        // Process has done *some* work to get here.
         assert!(utime + stime > 0);
     }
 

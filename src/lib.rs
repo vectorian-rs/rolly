@@ -6,24 +6,50 @@ pub(crate) mod otlp_log;
 pub(crate) mod otlp_metrics;
 pub(crate) mod otlp_trace;
 pub(crate) mod proto;
-#[cfg(feature = "tower")]
-pub mod tower;
 pub mod trace_id;
 pub(crate) mod use_metrics;
 
-#[cfg(feature = "tower")]
-pub use tower::propagation::PropagationLayer;
-#[cfg(feature = "tower")]
-pub use tower::request::CfRequestIdLayer;
-
 pub use exporter::BackpressureStrategy;
 pub use metrics::{counter, gauge, histogram, Counter, Gauge, Histogram};
+pub use use_metrics::UseMetricsState;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use exporter::{Exporter, ExporterConfig};
 use otlp_layer::OtlpLayer;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+
+/// Sink for encoded OTLP protobuf payloads.
+///
+/// This is the single transport boundary for all three OTLP signals.
+/// `OtlpLayer` calls `send_traces()` / `send_logs()` from tracing layer
+/// callbacks on the application's hot path. The runtime-owned metrics
+/// aggregation loop calls `send_metrics()`.
+///
+/// Implementations must be non-blocking. If the underlying channel is
+/// full, the payload should be dropped silently.
+pub trait TelemetrySink: Send + Sync + 'static {
+    /// Send encoded `ExportTraceServiceRequest` protobuf bytes.
+    fn send_traces(&self, data: Vec<u8>);
+    /// Send encoded `ExportLogsServiceRequest` protobuf bytes.
+    fn send_logs(&self, data: Vec<u8>);
+    /// Send encoded `ExportMetricsServiceRequest` protobuf bytes.
+    fn send_metrics(&self, data: Vec<u8>);
+}
+
+/// No-op sink that discards all telemetry data.
+///
+/// Useful for stderr-only setups, CLI tools, or tests where no OTLP
+/// export is needed.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NullSink;
+
+impl TelemetrySink for NullSink {
+    fn send_traces(&self, _data: Vec<u8>) {}
+    fn send_logs(&self, _data: Vec<u8>) {}
+    fn send_metrics(&self, _data: Vec<u8>) {}
+}
 
 /// Configuration for the telemetry stack.
 pub struct TelemetryConfig {
@@ -141,7 +167,7 @@ pub fn init(config: TelemetryConfig) -> TelemetryGuard {
         let sampling_rate = config.sampling_rate.unwrap_or(1.0).clamp(0.0, 1.0);
         let layer = if export_traces || export_logs {
             Some(OtlpLayer::new(otlp_layer::OtlpLayerConfig {
-                exporter: exp.clone(),
+                sink: Arc::new(exp.clone()),
                 service_name: &config.service_name,
                 service_version: &config.service_version,
                 environment: &config.environment,
@@ -182,20 +208,20 @@ pub fn init(config: TelemetryConfig) -> TelemetryGuard {
                 .metrics_flush_interval
                 .unwrap_or(Duration::from_secs(10));
             let exporter = exporter.clone();
-            let service_name = config.service_name;
-            let service_version = config.service_version;
-            let environment = config.environment;
-            let resource_attributes = config.resource_attributes;
+            let metrics_config = MetricsExportConfig {
+                service_name: config.service_name.clone(),
+                service_version: config.service_version.clone(),
+                environment: config.environment.clone(),
+                resource_attributes: config.resource_attributes.clone(),
+                scope_name: "rolly".to_string(),
+                scope_version: env!("CARGO_PKG_VERSION").to_string(),
+                start_time: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos() as u64,
+            };
             tokio::spawn(async move {
-                metrics_aggregation_loop(
-                    exporter,
-                    flush_interval,
-                    service_name,
-                    service_version,
-                    environment,
-                    resource_attributes,
-                )
-                .await;
+                metrics_aggregation_loop(exporter, flush_interval, metrics_config).await;
             });
         }
     }
@@ -207,40 +233,8 @@ pub fn init(config: TelemetryConfig) -> TelemetryGuard {
 async fn metrics_aggregation_loop(
     exporter: Exporter,
     flush_interval: Duration,
-    service_name: String,
-    service_version: String,
-    environment: String,
-    resource_attributes: Vec<(String, String)>,
+    config: MetricsExportConfig,
 ) {
-    use crate::otlp_metrics::encode_export_metrics_request;
-    use crate::otlp_trace::{AnyValue, KeyValue};
-
-    let mut resource_attrs = vec![
-        KeyValue {
-            key: "service.name".to_string(),
-            value: AnyValue::String(service_name),
-        },
-        KeyValue {
-            key: "service.version".to_string(),
-            value: AnyValue::String(service_version.clone()),
-        },
-        KeyValue {
-            key: "deployment.environment".to_string(),
-            value: AnyValue::String(environment),
-        },
-    ];
-    for (k, v) in resource_attributes {
-        resource_attrs.push(KeyValue {
-            key: k,
-            value: AnyValue::String(v),
-        });
-    }
-
-    let start_time = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as u64;
-
     let mut interval = tokio::time::interval(flush_interval);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     // Consume the first immediate tick
@@ -248,28 +242,9 @@ async fn metrics_aggregation_loop(
 
     loop {
         interval.tick().await;
-
-        let registry = metrics::global_registry();
-        let snapshots = registry.collect();
-        if snapshots.is_empty() {
-            continue;
+        if let Some(data) = collect_and_encode_metrics(&config) {
+            exporter.send_metrics(data);
         }
-
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as u64;
-
-        let data = encode_export_metrics_request(
-            &resource_attrs,
-            "rolly",
-            &service_version,
-            &snapshots,
-            start_time,
-            now,
-        );
-
-        exporter.send_metrics(data);
     }
 }
 
@@ -278,16 +253,80 @@ pub fn telemetry_dropped_total() -> u64 {
     exporter::dropped_total()
 }
 
-/// Convenience: create a `CfRequestIdLayer` for incoming requests.
-#[cfg(feature = "tower")]
-pub fn request_layer() -> CfRequestIdLayer {
-    CfRequestIdLayer
+/// Configuration for metrics export encoding.
+pub struct MetricsExportConfig {
+    /// Service name, version, environment, plus any custom attributes.
+    /// Converted to OTel KeyValue internally.
+    pub service_name: String,
+    pub service_version: String,
+    pub environment: String,
+    pub resource_attributes: Vec<(String, String)>,
+    /// Instrumentation scope name.
+    pub scope_name: String,
+    /// Instrumentation scope version.
+    pub scope_version: String,
+    /// Start time for cumulative metrics (nanos since epoch).
+    pub start_time: u64,
 }
 
-/// Convenience: create a `PropagationLayer` for outgoing requests.
-#[cfg(feature = "tower")]
-pub fn propagation_layer() -> PropagationLayer {
-    PropagationLayer
+/// Collect current metric snapshots and encode as OTLP protobuf.
+///
+/// Returns the encoded `ExportMetricsServiceRequest` bytes, ready to
+/// pass to `TelemetrySink::send_metrics()`. Returns `None` if no metrics
+/// have been recorded since the last collection.
+///
+/// The caller decides when and how often to call this.
+pub fn collect_and_encode_metrics(config: &MetricsExportConfig) -> Option<Vec<u8>> {
+    use otlp_trace::{AnyValue, KeyValue};
+
+    let snapshots = metrics::global_registry().collect();
+    if snapshots.is_empty() {
+        return None;
+    }
+
+    let mut resource_attrs = vec![
+        KeyValue {
+            key: "service.name".to_string(),
+            value: AnyValue::String(config.service_name.clone()),
+        },
+        KeyValue {
+            key: "service.version".to_string(),
+            value: AnyValue::String(config.service_version.clone()),
+        },
+        KeyValue {
+            key: "deployment.environment".to_string(),
+            value: AnyValue::String(config.environment.clone()),
+        },
+    ];
+    for (k, v) in &config.resource_attributes {
+        resource_attrs.push(KeyValue {
+            key: k.clone(),
+            value: AnyValue::String(v.clone()),
+        });
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64;
+    Some(otlp_metrics::encode_export_metrics_request(
+        &resource_attrs,
+        &config.scope_name,
+        &config.scope_version,
+        &snapshots,
+        config.start_time,
+        now,
+    ))
+}
+
+/// Poll USE metrics once.
+///
+/// Reads `/proc/self/stat` and `/proc/self/statm` synchronously, updates
+/// `state`, and emits metric-shaped `tracing::info!` events. The caller
+/// owns scheduling. Only meaningful on Linux; returns immediately on
+/// other platforms.
+pub fn collect_use_metrics(state: &mut UseMetricsState) {
+    use_metrics::poll_once(state);
 }
 
 #[cfg(feature = "_bench")]
@@ -351,20 +390,16 @@ mod tests {
         };
     }
 
-    #[cfg(feature = "tower")]
-    #[test]
-    fn request_layer_constructs() {
-        let _layer = request_layer();
-    }
-
-    #[cfg(feature = "tower")]
-    #[test]
-    fn propagation_layer_constructs() {
-        let _layer = propagation_layer();
-    }
-
     #[test]
     fn telemetry_dropped_total_is_callable() {
         let _count = telemetry_dropped_total();
+    }
+
+    #[test]
+    fn null_sink_accepts_data() {
+        let sink: Box<dyn TelemetrySink> = Box::new(NullSink);
+        sink.send_traces(vec![1, 2, 3]);
+        sink.send_logs(vec![4, 5, 6]);
+        sink.send_metrics(vec![7, 8, 9]);
     }
 }

@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
@@ -68,7 +69,7 @@ fn bench_subscriber() -> (
 ) {
     let (exporter, rx) = Exporter::start_test_with_capacity(1_000_000, BackpressureStrategy::Drop);
     let layer = OtlpLayer::new(OtlpLayerConfig {
-        exporter,
+        sink: Arc::new(exporter),
         service_name: "bench-ecommerce",
         service_version: "0.5.1",
         environment: "bench",

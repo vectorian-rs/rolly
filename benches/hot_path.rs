@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
 use rolly::bench::*;
 use tracing_subscriber::layer::SubscriberExt;
@@ -13,7 +15,7 @@ fn make_dispatch(
 ) {
     let (exporter, rx) = Exporter::start_test_with_capacity(capacity, BackpressureStrategy::Drop);
     let layer = OtlpLayer::new(OtlpLayerConfig {
-        exporter,
+        sink: Arc::new(exporter),
         service_name: "bench-svc",
         service_version: "0.0.1",
         environment: "bench",

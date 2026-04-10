@@ -93,7 +93,7 @@ async fn all_spans_arrive_after_flush_and_shutdown() {
     });
 
     let layer = OtlpLayer::new(OtlpLayerConfig {
-        exporter: exporter.clone(),
+        sink: std::sync::Arc::new(exporter.clone()),
         service_name: "flush-test",
         service_version: "0.0.1",
         environment: "test",
@@ -148,7 +148,7 @@ async fn shutdown_completes_when_endpoint_is_failing() {
     });
 
     let layer = OtlpLayer::new(OtlpLayerConfig {
-        exporter: exporter.clone(),
+        sink: std::sync::Arc::new(exporter.clone()),
         service_name: "fail-test",
         service_version: "0.0.1",
         environment: "test",
@@ -218,7 +218,7 @@ async fn flush_waits_for_in_flight_exports() {
     });
 
     let layer = OtlpLayer::new(OtlpLayerConfig {
-        exporter: exporter.clone(),
+        sink: std::sync::Arc::new(exporter.clone()),
         service_name: "inflight-test",
         service_version: "0.0.1",
         environment: "test",

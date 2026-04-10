@@ -7,7 +7,8 @@ use tracing_subscriber::layer::Context;
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::Layer;
 
-use crate::exporter::Exporter;
+use std::sync::Arc;
+
 use crate::otlp_log::{encode_export_logs_request, LogData, SeverityNumber};
 use crate::otlp_trace::{encode_export_trace_request, AnyValue, KeyValue, SpanData, SpanKind};
 use crate::trace_id::generate_span_id;
@@ -150,9 +151,6 @@ fn level_to_severity(level: &tracing::Level) -> SeverityNumber {
 /// Deterministic sampling decision based on trace_id.
 /// Uses the first 8 bytes of trace_id as a u64, maps to [0.0, 1.0) and compares
 /// against the sampling rate. The same trace_id always produces the same decision.
-/// Deterministic sampling decision based on trace_id.
-/// Uses the first 8 bytes of trace_id as a u64, maps to [0.0, 1.0) and compares
-/// against the sampling rate. The same trace_id always produces the same decision.
 pub fn should_sample(trace_id: [u8; 16], sampling_rate: f64) -> bool {
     if sampling_rate >= 1.0 {
         return true;
@@ -169,7 +167,7 @@ pub fn should_sample(trace_id: [u8; 16], sampling_rate: f64) -> bool {
 
 /// Configuration for constructing an `OtlpLayer`.
 pub struct OtlpLayerConfig<'a> {
-    pub exporter: Exporter,
+    pub sink: Arc<dyn crate::TelemetrySink>,
     pub service_name: &'a str,
     pub service_version: &'a str,
     pub environment: &'a str,
@@ -179,9 +177,9 @@ pub struct OtlpLayerConfig<'a> {
     pub sampling_rate: f64,
 }
 
-/// Custom tracing Layer that encodes spans/events as OTLP protobuf and sends to Exporter.
+/// Custom tracing Layer that encodes spans/events as OTLP protobuf and sends via TelemetrySink.
 pub struct OtlpLayer {
-    exporter: Exporter,
+    sink: Arc<dyn crate::TelemetrySink>,
     resource_attrs: Vec<KeyValue>,
     scope_name: String,
     scope_version: String,
@@ -214,7 +212,7 @@ impl OtlpLayer {
             });
         }
         Self {
-            exporter: config.exporter,
+            sink: config.sink,
             resource_attrs,
             scope_name: "pz-o11y".to_string(),
             scope_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -318,7 +316,7 @@ where
             &self.scope_version,
             &[log],
         );
-        self.exporter.send_logs(data);
+        self.sink.send_logs(data);
     }
 
     fn on_close(&self, id: Id, ctx: Context<'_, S>) {
@@ -373,30 +371,56 @@ where
             &self.scope_version,
             &[span_data],
         );
-        self.exporter.send_traces(data);
+        self.sink.send_traces(data);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::exporter::{ExportMessage, ExporterConfig};
     use tracing_subscriber::layer::SubscriberExt;
 
-    #[tokio::test]
-    async fn otlp_layer_constructs_without_panic() {
-        let exporter = Exporter::start(ExporterConfig {
-            traces_url: Some("http://127.0.0.1:1/v1/traces".to_string()),
-            logs_url: Some("http://127.0.0.1:1/v1/logs".to_string()),
-            metrics_url: None,
-            channel_capacity: 64,
-            batch_size: 512,
-            flush_interval: std::time::Duration::from_secs(1),
-            max_concurrent_exports: 4,
-            backpressure_strategy: crate::exporter::BackpressureStrategy::Drop,
-        });
+    // ─── Mock TelemetrySink backed by std::sync::mpsc ───
+
+    #[derive(Debug)]
+    #[allow(dead_code)]
+    enum MockMessage {
+        Traces(Vec<u8>),
+        Logs(Vec<u8>),
+        Metrics(Vec<u8>),
+    }
+
+    struct MockSink {
+        tx: std::sync::mpsc::Sender<MockMessage>,
+    }
+
+    impl crate::TelemetrySink for MockSink {
+        fn send_traces(&self, data: Vec<u8>) {
+            let _ = self.tx.send(MockMessage::Traces(data));
+        }
+        fn send_logs(&self, data: Vec<u8>) {
+            let _ = self.tx.send(MockMessage::Logs(data));
+        }
+        fn send_metrics(&self, data: Vec<u8>) {
+            let _ = self.tx.send(MockMessage::Metrics(data));
+        }
+    }
+
+    fn mock_sink() -> (
+        Arc<dyn crate::TelemetrySink>,
+        std::sync::mpsc::Receiver<MockMessage>,
+    ) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        (Arc::new(MockSink { tx }), rx)
+    }
+
+    // ─── Tests ───
+
+    #[test]
+    fn otlp_layer_constructs_without_panic() {
+        let (sink, _rx) = mock_sink();
         let _layer = OtlpLayer::new(OtlpLayerConfig {
-            exporter,
+            sink,
             service_name: "test-svc",
             service_version: "0.0.1",
             environment: "test",
@@ -407,15 +431,15 @@ mod tests {
         });
     }
 
-    #[tokio::test]
-    async fn custom_resource_attributes_appear_in_trace() {
-        let (exporter, mut rx) = Exporter::start_test();
+    #[test]
+    fn custom_resource_attributes_appear_in_trace() {
+        let (sink, rx) = mock_sink();
         let custom_attrs = vec![
             ("team".to_string(), "platform".to_string()),
             ("region".to_string(), "us-east-1".to_string()),
         ];
         let layer = OtlpLayer::new(OtlpLayerConfig {
-            exporter,
+            sink,
             service_name: "test-svc",
             service_version: "0.0.1",
             environment: "test",
@@ -432,9 +456,9 @@ mod tests {
             let _enter = span.enter();
         }
 
-        let msg = rx.recv().await.expect("should receive trace");
+        let msg = rx.recv().expect("should receive trace");
         match msg {
-            ExportMessage::Traces(data) => {
+            MockMessage::Traces(data) => {
                 assert!(
                     data.windows(4).any(|w| w == b"team"),
                     "custom attribute key 'team' not found in protobuf"
@@ -475,11 +499,11 @@ mod tests {
         assert!(hex_to_bytes_16("zz02030405060708090a0b0c0d0e0f10").is_err());
     }
 
-    #[tokio::test]
-    async fn layer_captures_span_and_sends_trace_on_close() {
-        let (exporter, mut rx) = Exporter::start_test();
+    #[test]
+    fn layer_captures_span_and_sends_trace_on_close() {
+        let (sink, rx) = mock_sink();
         let layer = OtlpLayer::new(OtlpLayerConfig {
-            exporter,
+            sink,
             service_name: "test-svc",
             service_version: "0.0.1",
             environment: "test",
@@ -499,9 +523,9 @@ mod tests {
             let _enter = span.enter();
         }
 
-        let msg = rx.recv().await.expect("should receive trace message");
+        let msg = rx.recv().expect("should receive trace message");
         match msg {
-            ExportMessage::Traces(data) => {
+            MockMessage::Traces(data) => {
                 assert!(
                     data.windows(16).any(|w| w == trace_id_bytes),
                     "trace_id not found in protobuf"
@@ -515,11 +539,11 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn layer_captures_event_and_sends_log() {
-        let (exporter, mut rx) = Exporter::start_test();
+    #[test]
+    fn layer_captures_event_and_sends_log() {
+        let (sink, rx) = mock_sink();
         let layer = OtlpLayer::new(OtlpLayerConfig {
-            exporter,
+            sink,
             service_name: "test-svc",
             service_version: "0.0.1",
             environment: "test",
@@ -533,9 +557,9 @@ mod tests {
 
         tracing::info!("hello integration");
 
-        let msg = rx.recv().await.expect("should receive log message");
+        let msg = rx.recv().expect("should receive log message");
         match msg {
-            ExportMessage::Logs(data) => {
+            MockMessage::Logs(data) => {
                 assert!(
                     data.windows(17).any(|w| w == b"hello integration"),
                     "log body not found in protobuf"
@@ -545,11 +569,11 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn layer_event_inside_span_carries_trace_context() {
-        let (exporter, mut rx) = Exporter::start_test();
+    #[test]
+    fn layer_event_inside_span_carries_trace_context() {
+        let (sink, rx) = mock_sink();
         let layer = OtlpLayer::new(OtlpLayerConfig {
-            exporter,
+            sink,
             service_name: "test-svc",
             service_version: "0.0.1",
             environment: "test",
@@ -574,9 +598,9 @@ mod tests {
         }
 
         // First message: the log event
-        let msg = rx.recv().await.expect("should receive log");
+        let msg = rx.recv().expect("should receive log");
         match msg {
-            ExportMessage::Logs(data) => {
+            MockMessage::Logs(data) => {
                 assert!(
                     data.windows(16).any(|w| w == trace_id_bytes),
                     "trace_id not propagated to log"
@@ -586,15 +610,15 @@ mod tests {
         }
 
         // Second message: the span trace
-        let msg = rx.recv().await.expect("should receive trace");
-        assert!(matches!(msg, ExportMessage::Traces(_)));
+        let msg = rx.recv().expect("should receive trace");
+        assert!(matches!(msg, MockMessage::Traces(_)));
     }
 
-    #[tokio::test]
-    async fn field_collector_handles_all_types() {
-        let (exporter, mut rx) = Exporter::start_test();
+    #[test]
+    fn field_collector_handles_all_types() {
+        let (sink, rx) = mock_sink();
         let layer = OtlpLayer::new(OtlpLayerConfig {
-            exporter,
+            sink,
             service_name: "test-svc",
             service_version: "0.0.1",
             environment: "test",
@@ -618,9 +642,9 @@ mod tests {
             let _enter = span.enter();
         }
 
-        let msg = rx.recv().await.expect("should receive trace");
+        let msg = rx.recv().expect("should receive trace");
         match msg {
-            ExportMessage::Traces(data) => {
+            MockMessage::Traces(data) => {
                 for name in &[
                     "str_field",
                     "i64_field",
@@ -643,11 +667,11 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn parent_span_id_propagated_to_child() {
-        let (exporter, mut rx) = Exporter::start_test();
+    #[test]
+    fn parent_span_id_propagated_to_child() {
+        let (sink, rx) = mock_sink();
         let layer = OtlpLayer::new(OtlpLayerConfig {
-            exporter,
+            sink,
             service_name: "test-svc",
             service_version: "0.0.1",
             environment: "test",
@@ -665,13 +689,12 @@ mod tests {
             {
                 let child = tracing::info_span!("child-span");
                 let _child_enter = child.enter();
-            } // child closes first
-        } // parent closes second
+            }
+        }
 
-        // First: child span
-        let msg1 = rx.recv().await.expect("should receive child trace");
+        let msg1 = rx.recv().expect("should receive child trace");
         match &msg1 {
-            ExportMessage::Traces(data) => {
+            MockMessage::Traces(data) => {
                 assert!(
                     data.windows(10).any(|w| w == b"child-span"),
                     "child span name not found"
@@ -680,10 +703,9 @@ mod tests {
             other => panic!("expected Traces for child, got {:?}", other),
         }
 
-        // Second: parent span
-        let msg2 = rx.recv().await.expect("should receive parent trace");
+        let msg2 = rx.recv().expect("should receive parent trace");
         match &msg2 {
-            ExportMessage::Traces(data) => {
+            MockMessage::Traces(data) => {
                 assert!(
                     data.windows(11).any(|w| w == b"parent-span"),
                     "parent span name not found"
@@ -693,11 +715,11 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn layer_skips_log_export_when_disabled() {
-        let (exporter, mut rx) = Exporter::start_test();
+    #[test]
+    fn layer_skips_log_export_when_disabled() {
+        let (sink, rx) = mock_sink();
         let layer = OtlpLayer::new(OtlpLayerConfig {
-            exporter,
+            sink,
             service_name: "test-svc",
             service_version: "0.0.1",
             environment: "test",
@@ -709,32 +731,28 @@ mod tests {
         let subscriber = tracing_subscriber::registry().with(layer);
         let _guard = tracing::subscriber::set_default(subscriber);
 
-        // Emit an event — should be suppressed
         tracing::info!("should not export");
 
-        // Create and close a span — trace should still arrive
         {
             let span = tracing::info_span!("traced-span");
             let _enter = span.enter();
         }
 
-        let msg = rx.recv().await.expect("should receive trace");
+        let msg = rx.recv().expect("should receive trace");
         assert!(
-            matches!(msg, ExportMessage::Traces(_)),
+            matches!(msg, MockMessage::Traces(_)),
             "expected Traces, got {:?}",
             msg
         );
 
-        // No more messages expected
-        let extra = tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await;
-        assert!(extra.is_err(), "expected no more messages");
+        assert!(rx.try_recv().is_err(), "expected no more messages");
     }
 
-    #[tokio::test]
-    async fn layer_skips_trace_export_when_disabled() {
-        let (exporter, mut rx) = Exporter::start_test();
+    #[test]
+    fn layer_skips_trace_export_when_disabled() {
+        let (sink, rx) = mock_sink();
         let layer = OtlpLayer::new(OtlpLayerConfig {
-            exporter,
+            sink,
             service_name: "test-svc",
             service_version: "0.0.1",
             environment: "test",
@@ -746,23 +764,20 @@ mod tests {
         let subscriber = tracing_subscriber::registry().with(layer);
         let _guard = tracing::subscriber::set_default(subscriber);
 
-        // Emit an event inside a span
         {
             let span = tracing::info_span!("suppressed-span");
             let _enter = span.enter();
             tracing::info!("logged event");
         }
 
-        // Should receive the log but not the trace
-        let msg = rx.recv().await.expect("should receive log");
+        let msg = rx.recv().expect("should receive log");
         assert!(
-            matches!(msg, ExportMessage::Logs(_)),
+            matches!(msg, MockMessage::Logs(_)),
             "expected Logs, got {:?}",
             msg
         );
 
-        // No trace message expected
-        let extra = tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await;
+        let extra = rx.recv_timeout(std::time::Duration::from_millis(100));
         assert!(extra.is_err(), "expected no trace message");
     }
 
@@ -770,7 +785,6 @@ mod tests {
 
     #[test]
     fn should_sample_rate_1_always_samples() {
-        // All possible trace_ids should be sampled at rate 1.0
         for i in 0u8..=255 {
             let mut trace_id = [0u8; 16];
             trace_id[0] = i;
@@ -799,7 +813,6 @@ mod tests {
 
     #[test]
     fn should_sample_respects_rate_approximately() {
-        // Generate 10000 distinct trace_ids using BLAKE3 for uniform distribution
         let mut sampled = 0u64;
         let total = 10_000u64;
         for i in 0..total {
@@ -818,11 +831,11 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn sampling_rate_zero_drops_all_traces_and_logs() {
-        let (exporter, mut rx) = Exporter::start_test();
+    #[test]
+    fn sampling_rate_zero_drops_all_traces_and_logs() {
+        let (sink, rx) = mock_sink();
         let layer = OtlpLayer::new(OtlpLayerConfig {
-            exporter,
+            sink,
             service_name: "test-svc",
             service_version: "0.0.1",
             environment: "test",
@@ -840,18 +853,17 @@ mod tests {
             tracing::info!("sampled-out-log");
         }
 
-        let result = tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await;
         assert!(
-            result.is_err(),
+            rx.try_recv().is_err(),
             "expected no messages when sampling_rate=0.0"
         );
     }
 
-    #[tokio::test]
-    async fn sampling_rate_one_exports_all() {
-        let (exporter, mut rx) = Exporter::start_test();
+    #[test]
+    fn sampling_rate_one_exports_all() {
+        let (sink, rx) = mock_sink();
         let layer = OtlpLayer::new(OtlpLayerConfig {
-            exporter,
+            sink,
             service_name: "test-svc",
             service_version: "0.0.1",
             environment: "test",
@@ -870,20 +882,18 @@ mod tests {
             tracing::info!("sampled-in-log");
         }
 
-        // Should get log then trace
-        let msg1 = rx.recv().await.expect("should receive log");
-        assert!(matches!(msg1, ExportMessage::Logs(_)));
+        let msg1 = rx.recv().expect("should receive log");
+        assert!(matches!(msg1, MockMessage::Logs(_)));
 
-        let msg2 = rx.recv().await.expect("should receive trace");
-        assert!(matches!(msg2, ExportMessage::Traces(_)));
+        let msg2 = rx.recv().expect("should receive trace");
+        assert!(matches!(msg2, MockMessage::Traces(_)));
     }
 
-    #[tokio::test]
-    async fn child_spans_inherit_parent_sampling_decision() {
-        let (exporter, mut rx) = Exporter::start_test();
-        // Rate 0.0: nothing should be exported
+    #[test]
+    fn child_spans_inherit_parent_sampling_decision() {
+        let (sink, rx) = mock_sink();
         let layer = OtlpLayer::new(OtlpLayerConfig {
-            exporter,
+            sink,
             service_name: "test-svc",
             service_version: "0.0.1",
             environment: "test",
@@ -905,20 +915,17 @@ mod tests {
             }
         }
 
-        let result = tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await;
         assert!(
-            result.is_err(),
+            rx.try_recv().is_err(),
             "child spans and events should inherit parent's sampled-out decision"
         );
     }
 
-    #[tokio::test]
-    async fn events_outside_spans_are_exported_regardless_of_sampling() {
-        let (exporter, mut rx) = Exporter::start_test();
-        // Even at rate 0.0, events outside any span have no sampling context
-        // and default to sampled=true
+    #[test]
+    fn events_outside_spans_are_exported_regardless_of_sampling() {
+        let (sink, rx) = mock_sink();
         let layer = OtlpLayer::new(OtlpLayerConfig {
-            exporter,
+            sink,
             service_name: "test-svc",
             service_version: "0.0.1",
             environment: "test",
@@ -932,11 +939,8 @@ mod tests {
 
         tracing::info!("standalone-log");
 
-        let msg = rx
-            .recv()
-            .await
-            .expect("standalone event should be exported");
-        assert!(matches!(msg, ExportMessage::Logs(_)));
+        let msg = rx.recv().expect("standalone event should be exported");
+        assert!(matches!(msg, MockMessage::Logs(_)));
     }
 }
 

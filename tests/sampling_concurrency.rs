@@ -122,7 +122,7 @@ fn sampled_out_produces_zero_channel_messages_under_concurrency() {
     let (exporter, mut rx) =
         Exporter::start_test_with_capacity(1024, rolly::bench::BackpressureStrategy::Drop);
     let layer = OtlpLayer::new(OtlpLayerConfig {
-        exporter,
+        sink: std::sync::Arc::new(exporter),
         service_name: "sample-test",
         service_version: "0.0.1",
         environment: "test",

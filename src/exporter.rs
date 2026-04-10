@@ -102,7 +102,7 @@ impl Exporter {
         )
     }
 
-    /// Send encoded trace data to the exporter.
+    /// Send encoded trace data to the exporter (non-blocking).
     pub fn send_traces(&self, data: Vec<u8>) {
         match self.backpressure_strategy {
             BackpressureStrategy::Drop => {
@@ -158,6 +158,18 @@ impl Exporter {
     /// Signal the exporter to stop after draining remaining messages.
     pub async fn shutdown(&self) {
         let _ = self.tx.send(ExportMessage::Shutdown).await;
+    }
+}
+
+impl crate::TelemetrySink for Exporter {
+    fn send_traces(&self, data: Vec<u8>) {
+        self.send_traces(data);
+    }
+    fn send_logs(&self, data: Vec<u8>) {
+        self.send_logs(data);
+    }
+    fn send_metrics(&self, data: Vec<u8>) {
+        self.send_metrics(data);
     }
 }
 
