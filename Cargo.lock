@@ -1594,8 +1594,10 @@ name = "rolly-tokio"
 version = "0.11.0"
 dependencies = [
  "bytes",
+ "criterion",
  "reqwest",
  "rolly",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",

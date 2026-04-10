@@ -18,6 +18,15 @@ pub struct TelemetryGuard {
     task_handles: Vec<tokio::task::JoinHandle<()>>,
 }
 
+impl From<exporter::Exporter> for TelemetryGuard {
+    fn from(exporter: exporter::Exporter) -> Self {
+        Self {
+            exporter: Some(exporter),
+            task_handles: Vec::new(),
+        }
+    }
+}
+
 impl Drop for TelemetryGuard {
     fn drop(&mut self) {
         for handle in &self.task_handles {

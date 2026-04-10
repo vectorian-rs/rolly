@@ -71,6 +71,7 @@ async fn init_creates_spans_that_arrive_as_otlp_protobuf() {
     });
 
     // Initialize telemetry pointing at our test server
+    #[allow(deprecated)]
     let guard = rolly::init(rolly::TelemetryConfig {
         service_name: "e2e-test-service".into(),
         service_version: "0.0.1".into(),

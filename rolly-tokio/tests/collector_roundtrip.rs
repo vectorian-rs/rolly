@@ -1,5 +1,3 @@
-#![cfg(feature = "_bench")]
-
 //! Smoke test: verify traces/logs/metrics arrive at a real otel-collector.
 //!
 //! Requires a running collector:
@@ -37,6 +35,7 @@ async fn traces_logs_metrics_arrive_at_collector() {
         }
     }
 
+    #[allow(deprecated)]
     let guard = rolly::init(rolly::TelemetryConfig {
         service_name: "roundtrip-test".into(),
         service_version: "0.0.1".into(),

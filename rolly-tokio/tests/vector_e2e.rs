@@ -1,5 +1,3 @@
-#![cfg(feature = "_bench")]
-
 //! End-to-end test using Vector as OTLP collector.
 //!
 //! Vector receives OTLP traces/logs/metrics over HTTP and writes them
@@ -114,6 +112,7 @@ async fn vector_e2e_traces_logs_metrics() {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // ── Initialize telemetry ─────────────────────────────────────────
+    #[allow(deprecated)]
     let guard = rolly::init(rolly::TelemetryConfig {
         service_name: "vector-e2e-test".into(),
         service_version: "0.1.0".into(),
