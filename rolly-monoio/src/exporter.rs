@@ -53,46 +53,22 @@ impl Exporter {
     /// Start the exporter background task. Returns a handle for sending data.
     ///
     /// Must be called from within a monoio runtime context.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the URL configuration is invalid.
-    pub fn start(config: ExporterConfig) -> Result<Self, StartError> {
+    pub fn start(config: ExporterConfig) -> Self {
         let (tx, rx) = crossbeam_channel::bounded(config.channel_capacity);
-
-        // Parse URLs upfront to fail fast
-        let traces_endpoint = config
-            .traces_url
-            .as_deref()
-            .map(parse_url)
-            .transpose()
-            .map_err(StartError::InvalidUrl)?;
-        let logs_endpoint = config
-            .logs_url
-            .as_deref()
-            .map(parse_url)
-            .transpose()
-            .map_err(StartError::InvalidUrl)?;
-        let metrics_endpoint = config
-            .metrics_url
-            .as_deref()
-            .map(parse_url)
-            .transpose()
-            .map_err(StartError::InvalidUrl)?;
 
         monoio::spawn(exporter_loop(
             rx,
-            traces_endpoint,
-            logs_endpoint,
-            metrics_endpoint,
+            config.traces_url,
+            config.logs_url,
+            config.metrics_url,
             config.batch_size,
             config.flush_interval,
         ));
 
-        Ok(Self {
+        Self {
             tx,
             backpressure_strategy: config.backpressure_strategy,
-        })
+        }
     }
 
     /// Create an exporter for testing that doesn't spawn the HTTP loop.
@@ -170,9 +146,7 @@ impl Exporter {
     ///
     /// Flushes pending batches, then waits for the background task to exit.
     pub async fn shutdown(&self) {
-        // First flush to ensure all batches are sent.
         self.flush().await;
-        // Then signal shutdown and wait for the loop to confirm exit.
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         if self.tx.try_send(ExportMessage::Shutdown(done_tx)).is_err() {
             return;
@@ -184,7 +158,6 @@ impl Exporter {
     ///
     /// Used by `TelemetryGuard::drop` where we cannot await.
     pub fn request_shutdown(&self) {
-        // Fire-and-forget: the background task will drain batches before exiting.
         let (done_tx, _) = std::sync::mpsc::channel();
         let _ = self.tx.try_send(ExportMessage::Shutdown(done_tx));
     }
@@ -215,68 +188,6 @@ impl rolly::TelemetrySink for Exporter {
     }
 }
 
-// -- Error types --------------------------------------------------------------
-
-/// Errors that can occur when starting the exporter.
-#[derive(Debug)]
-#[non_exhaustive]
-pub enum StartError {
-    /// A configured URL could not be parsed.
-    InvalidUrl(String),
-}
-
-impl std::fmt::Display for StartError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::InvalidUrl(msg) => write!(f, "invalid URL: {}", msg),
-        }
-    }
-}
-
-impl std::error::Error for StartError {}
-
-// -- URL parsing --------------------------------------------------------------
-
-/// Parsed HTTP endpoint.
-#[derive(Clone, Debug)]
-struct Endpoint {
-    host: String,
-    port: u16,
-    path: String,
-}
-
-/// Parse an HTTP URL into host, port, path components.
-///
-/// Supports `http://host:port/path` format. HTTPS is not supported (raw TCP).
-fn parse_url(url: &str) -> Result<Endpoint, String> {
-    let url = url.trim();
-    let rest = url
-        .strip_prefix("http://")
-        .ok_or_else(|| format!("URL must start with http://: {}", url))?;
-
-    let (authority, path) = match rest.find('/') {
-        Some(i) => (&rest[..i], &rest[i..]),
-        None => (rest, "/"),
-    };
-
-    let (host, port) = match authority.rfind(':') {
-        Some(i) => {
-            let h = &authority[..i];
-            let p = authority[i + 1..]
-                .parse::<u16>()
-                .map_err(|e| format!("invalid port in {}: {}", url, e))?;
-            (h.to_string(), p)
-        }
-        None => (authority.to_string(), 80),
-    };
-
-    Ok(Endpoint {
-        host,
-        port,
-        path: path.to_string(),
-    })
-}
-
 // -- Exporter background loop ------------------------------------------------
 
 const RETRY_DELAYS: [Duration; 3] = [
@@ -286,7 +197,6 @@ const RETRY_DELAYS: [Duration; 3] = [
 ];
 
 /// Polling interval when the channel has been empty (idle mode).
-/// Reduces to `ACTIVE_CHECK_INTERVAL` as soon as a message arrives.
 const IDLE_CHECK_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Polling interval when messages are flowing.
@@ -294,15 +204,18 @@ const ACTIVE_CHECK_INTERVAL: Duration = Duration::from_millis(10);
 
 async fn exporter_loop(
     rx: Receiver<ExportMessage>,
-    traces_endpoint: Option<Endpoint>,
-    logs_endpoint: Option<Endpoint>,
-    metrics_endpoint: Option<Endpoint>,
+    traces_url: Option<String>,
+    logs_url: Option<String>,
+    metrics_url: Option<String>,
     batch_size: usize,
     flush_interval: Duration,
 ) {
     let mut trace_batch: Vec<Bytes> = Vec::new();
     let mut log_batch: Vec<Bytes> = Vec::new();
     let mut metrics_batch: Vec<Bytes> = Vec::new();
+
+    // Track in-flight HTTP POSTs running on std::threads.
+    let in_flight = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
     let mut check_interval = IDLE_CHECK_INTERVAL;
     let mut time_since_flush = Duration::ZERO;
@@ -319,43 +232,45 @@ async fn exporter_loop(
                     got_messages = true;
                     trace_batch.push(data);
                     if trace_batch.len() >= batch_size {
-                        flush_batch(&mut trace_batch, traces_endpoint.as_ref()).await;
+                        flush_batch(&mut trace_batch, traces_url.as_deref(), &in_flight);
                     }
                 }
                 Ok(ExportMessage::Logs(data)) => {
                     got_messages = true;
                     log_batch.push(data);
                     if log_batch.len() >= batch_size {
-                        flush_batch(&mut log_batch, logs_endpoint.as_ref()).await;
+                        flush_batch(&mut log_batch, logs_url.as_deref(), &in_flight);
                     }
                 }
                 Ok(ExportMessage::Metrics(data)) => {
                     got_messages = true;
                     metrics_batch.push(data);
                     if metrics_batch.len() >= batch_size {
-                        flush_batch(&mut metrics_batch, metrics_endpoint.as_ref()).await;
+                        flush_batch(&mut metrics_batch, metrics_url.as_deref(), &in_flight);
                     }
                 }
                 Ok(ExportMessage::Flush(done)) => {
-                    flush_batch(&mut trace_batch, traces_endpoint.as_ref()).await;
-                    flush_batch(&mut log_batch, logs_endpoint.as_ref()).await;
-                    flush_batch(&mut metrics_batch, metrics_endpoint.as_ref()).await;
+                    flush_batch(&mut trace_batch, traces_url.as_deref(), &in_flight);
+                    flush_batch(&mut log_batch, logs_url.as_deref(), &in_flight);
+                    flush_batch(&mut metrics_batch, metrics_url.as_deref(), &in_flight);
+                    wait_for_in_flight(&in_flight).await;
                     let _ = done.send(());
                     time_since_flush = Duration::ZERO;
                 }
                 Ok(ExportMessage::Shutdown(done)) => {
-                    flush_batch(&mut trace_batch, traces_endpoint.as_ref()).await;
-                    flush_batch(&mut log_batch, logs_endpoint.as_ref()).await;
-                    flush_batch(&mut metrics_batch, metrics_endpoint.as_ref()).await;
+                    flush_batch(&mut trace_batch, traces_url.as_deref(), &in_flight);
+                    flush_batch(&mut log_batch, logs_url.as_deref(), &in_flight);
+                    flush_batch(&mut metrics_batch, metrics_url.as_deref(), &in_flight);
+                    wait_for_in_flight(&in_flight).await;
                     let _ = done.send(());
                     return;
                 }
                 Err(crossbeam_channel::TryRecvError::Empty) => break,
                 Err(crossbeam_channel::TryRecvError::Disconnected) => {
-                    // All senders dropped; flush remaining and exit.
-                    flush_batch(&mut trace_batch, traces_endpoint.as_ref()).await;
-                    flush_batch(&mut log_batch, logs_endpoint.as_ref()).await;
-                    flush_batch(&mut metrics_batch, metrics_endpoint.as_ref()).await;
+                    flush_batch(&mut trace_batch, traces_url.as_deref(), &in_flight);
+                    flush_batch(&mut log_batch, logs_url.as_deref(), &in_flight);
+                    flush_batch(&mut metrics_batch, metrics_url.as_deref(), &in_flight);
+                    wait_for_in_flight(&in_flight).await;
                     return;
                 }
             }
@@ -371,24 +286,38 @@ async fn exporter_loop(
         // Time-based flush
         if time_since_flush >= flush_interval {
             time_since_flush = Duration::ZERO;
-            flush_batch(&mut trace_batch, traces_endpoint.as_ref()).await;
-            flush_batch(&mut log_batch, logs_endpoint.as_ref()).await;
-            flush_batch(&mut metrics_batch, metrics_endpoint.as_ref()).await;
+            flush_batch(&mut trace_batch, traces_url.as_deref(), &in_flight);
+            flush_batch(&mut log_batch, logs_url.as_deref(), &in_flight);
+            flush_batch(&mut metrics_batch, metrics_url.as_deref(), &in_flight);
         }
     }
 }
 
-/// Concatenate batch payloads and POST them.
+/// Wait for all in-flight HTTP POSTs to complete without blocking the event loop.
+async fn wait_for_in_flight(in_flight: &std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    while in_flight.load(std::sync::atomic::Ordering::Acquire) > 0 {
+        monoio::time::sleep(Duration::from_millis(1)).await;
+    }
+}
+
+/// Concatenate batch payloads and POST them on a background std::thread.
 ///
 /// Protobuf repeated fields merge on concatenation, so multiple
 /// `ExportTraceServiceRequest` payloads concatenated produce a valid
 /// message with multiple `ResourceSpans`.
-async fn flush_batch(batch: &mut Vec<Bytes>, endpoint: Option<&Endpoint>) {
+///
+/// The HTTP POST runs on a spawned OS thread via `ureq` (blocking I/O
+/// with TLS support). This keeps the monoio event loop responsive.
+fn flush_batch(
+    batch: &mut Vec<Bytes>,
+    url: Option<&str>,
+    in_flight: &std::sync::Arc<std::sync::atomic::AtomicUsize>,
+) {
     if batch.is_empty() {
         return;
     }
-    let endpoint = match endpoint {
-        Some(ep) => ep,
+    let url = match url {
+        Some(u) => u.to_string(),
         None => {
             batch.clear();
             return;
@@ -401,87 +330,57 @@ async fn flush_batch(batch: &mut Vec<Bytes>, endpoint: Option<&Endpoint>) {
         payload.extend_from_slice(&item);
     }
 
-    post_with_retry(endpoint, &payload).await;
+    in_flight.fetch_add(1, std::sync::atomic::Ordering::Release);
+    let in_flight = in_flight.clone();
+    std::thread::spawn(move || {
+        post_with_retry(&url, &payload);
+        in_flight.fetch_sub(1, std::sync::atomic::Ordering::Release);
+    });
 }
 
 /// POST with exponential backoff. On total failure, drop the batch.
 ///
-/// Uses `eprintln!` intentionally -- not `tracing::warn!` -- because this runs
+/// Uses `eprintln!` intentionally — not `tracing::warn!` — because this runs
 /// inside the telemetry pipeline. Using tracing here would re-enter the OtlpLayer
 /// and cause infinite recursion.
-async fn post_with_retry(endpoint: &Endpoint, body: &[u8]) {
+///
+/// **Blocking:** Each POST blocks the thread for the duration of the HTTP
+/// request (including retries with exponential backoff up to ~2.1s total).
+/// The monoio event loop is stalled during this time. For local collectors
+/// (localhost, <10ms latency) this is negligible. For remote endpoints with
+/// higher latency, consider using `rolly-tokio` instead.
+fn post_with_retry(url: &str, body: &[u8]) {
     for (attempt, delay) in RETRY_DELAYS.iter().enumerate() {
-        match http_post(endpoint, body).await {
-            Ok(status) if (200..300).contains(&status) => return,
-            Ok(status) => {
+        match ureq::post(url)
+            .header("Content-Type", "application/x-protobuf")
+            .send(body)
+        {
+            Ok(response) if response.status().is_success() => return,
+            Ok(response) => {
                 eprintln!(
-                    "rolly-monoio: export attempt {}/{} to {}:{}{} failed: HTTP {}",
+                    "rolly-monoio: export attempt {}/{} to {} failed: HTTP {}",
                     attempt + 1,
                     RETRY_DELAYS.len(),
-                    endpoint.host,
-                    endpoint.port,
-                    endpoint.path,
-                    status,
+                    url,
+                    response.status().as_u16(),
                 );
             }
             Err(e) => {
                 eprintln!(
-                    "rolly-monoio: export attempt {}/{} to {}:{}{} failed: {}",
+                    "rolly-monoio: export attempt {}/{} to {} failed: {}",
                     attempt + 1,
                     RETRY_DELAYS.len(),
-                    endpoint.host,
-                    endpoint.port,
-                    endpoint.path,
+                    url,
                     e,
                 );
             }
         }
-        monoio::time::sleep(*delay).await;
+        std::thread::sleep(*delay);
     }
     eprintln!(
         "rolly-monoio: dropping batch after {} retries",
         RETRY_DELAYS.len()
     );
-}
-
-/// Perform a raw HTTP/1.1 POST using monoio's TcpStream (ownership-based I/O).
-///
-/// Opens a new TCP connection per request (no connection pooling). This is
-/// simpler than managing a connection pool but pays the TCP handshake cost
-/// on each export. Acceptable for typical OTLP flush intervals (1-10s).
-async fn http_post(endpoint: &Endpoint, body: &[u8]) -> Result<u16, std::io::Error> {
-    use monoio::io::{AsyncReadRent, AsyncWriteRentExt};
-
-    let addr = format!("{}:{}", endpoint.host, endpoint.port);
-    let mut stream = monoio::net::TcpStream::connect(addr).await?;
-
-    let request = format!(
-        "POST {} HTTP/1.1\r\nHost: {}:{}\r\nContent-Type: application/x-protobuf\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        endpoint.path, endpoint.host, endpoint.port, body.len()
-    );
-
-    let mut data = request.into_bytes();
-    data.extend_from_slice(body);
-
-    let (result, _) = stream.write_all(data).await;
-    result?;
-
-    // Read response status line. A single read is sufficient for the status
-    // line in practice (< 50 bytes, arrives in one TCP segment). If the read
-    // returns a partial status line, we parse status 0 and retry — degraded
-    // but correct.
-    let buf = vec![0u8; 256];
-    let (result, buf) = stream.read(buf).await;
-    let n = result?;
-
-    let response = String::from_utf8_lossy(&buf[..n]);
-    let status = response
-        .split_whitespace()
-        .nth(1)
-        .and_then(|s| s.parse::<u16>().ok())
-        .unwrap_or(0);
-
-    Ok(status)
 }
 
 #[cfg(test)]
@@ -491,35 +390,6 @@ mod tests {
     #[test]
     fn drop_counter_is_callable() {
         let _count = rolly::telemetry_dropped_total();
-    }
-
-    #[test]
-    fn parse_url_basic() {
-        let ep = parse_url("http://localhost:4318/v1/traces").unwrap();
-        assert_eq!(ep.host, "localhost");
-        assert_eq!(ep.port, 4318);
-        assert_eq!(ep.path, "/v1/traces");
-    }
-
-    #[test]
-    fn parse_url_default_port() {
-        let ep = parse_url("http://example.com/v1/logs").unwrap();
-        assert_eq!(ep.host, "example.com");
-        assert_eq!(ep.port, 80);
-        assert_eq!(ep.path, "/v1/logs");
-    }
-
-    #[test]
-    fn parse_url_no_path() {
-        let ep = parse_url("http://localhost:4318").unwrap();
-        assert_eq!(ep.host, "localhost");
-        assert_eq!(ep.port, 4318);
-        assert_eq!(ep.path, "/");
-    }
-
-    #[test]
-    fn parse_url_rejects_https() {
-        assert!(parse_url("https://localhost:4318/v1/traces").is_err());
     }
 
     #[test]

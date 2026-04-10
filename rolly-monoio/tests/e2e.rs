@@ -60,7 +60,7 @@ async fn exporter_queues_and_flushes_without_panic() {
         flush_interval: Duration::from_secs(60),
         backpressure_strategy: rolly::BackpressureStrategy::Drop,
     };
-    let exporter = rolly_monoio::MonoioExporter::start(config).unwrap();
+    let exporter = rolly_monoio::MonoioExporter::start(config);
 
     exporter.send_traces(vec![0x0A, 0x00]);
     exporter.send_logs(vec![0x0A, 0x00]);
@@ -79,7 +79,7 @@ async fn exporter_flush_completes() {
         flush_interval: Duration::from_secs(60),
         backpressure_strategy: rolly::BackpressureStrategy::Drop,
     };
-    let exporter = rolly_monoio::MonoioExporter::start(config).unwrap();
+    let exporter = rolly_monoio::MonoioExporter::start(config);
 
     exporter.flush().await;
     exporter.shutdown().await;
@@ -115,7 +115,7 @@ async fn exporter_sends_traces_to_server() {
         flush_interval: Duration::from_secs(60),
         backpressure_strategy: rolly::BackpressureStrategy::Drop,
     };
-    let exporter = rolly_monoio::MonoioExporter::start(config).unwrap();
+    let exporter = rolly_monoio::MonoioExporter::start(config);
 
     let payload = vec![0x0A, 0x02, 0x08, 0x01];
     exporter.send_traces(payload.clone());
@@ -158,7 +158,7 @@ async fn exporter_batches_multiple_messages() {
         flush_interval: Duration::from_secs(60),
         backpressure_strategy: rolly::BackpressureStrategy::Drop,
     };
-    let exporter = rolly_monoio::MonoioExporter::start(config).unwrap();
+    let exporter = rolly_monoio::MonoioExporter::start(config);
 
     let payload = vec![0x0A, 0x00];
     exporter.send_traces(payload.clone());
@@ -201,7 +201,7 @@ async fn exporter_handles_traces_and_logs() {
         flush_interval: Duration::from_secs(60),
         backpressure_strategy: rolly::BackpressureStrategy::Drop,
     };
-    let exporter = rolly_monoio::MonoioExporter::start(config).unwrap();
+    let exporter = rolly_monoio::MonoioExporter::start(config);
 
     exporter.send_traces(vec![0x0A, 0x00]);
     exporter.send_logs(vec![0x0A, 0x00]);
@@ -257,7 +257,7 @@ async fn exporter_skips_logs_when_no_logs_url() {
         flush_interval: Duration::from_secs(60),
         backpressure_strategy: rolly::BackpressureStrategy::Drop,
     };
-    let exporter = rolly_monoio::MonoioExporter::start(config).unwrap();
+    let exporter = rolly_monoio::MonoioExporter::start(config);
 
     exporter.send_traces(vec![0x0A, 0x00]);
     exporter.send_logs(vec![0x0A, 0x00]); // should be silently dropped

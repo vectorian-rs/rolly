@@ -1,8 +1,14 @@
 //! Monoio-based transport for the rolly observability crate.
 //!
 //! Provides [`MonoioExporter`] for batching and shipping OTLP telemetry
-//! over HTTP using raw TCP, plus convenience functions for one-liner
-//! telemetry setup.
+//! over HTTP, plus convenience functions for one-liner telemetry setup.
+//!
+//! # HTTP transport
+//!
+//! HTTP exports use [`ureq`] (synchronous, with TLS via rustls) on
+//! spawned OS threads. The monoio event loop stays responsive — it
+//! dispatches POST work to background threads and polls for completion.
+//! For non-blocking async HTTP, use `rolly-tokio` instead.
 
 mod exporter;
 
@@ -10,7 +16,6 @@ mod exporter;
 pub use exporter::ExportMessage;
 pub use exporter::Exporter as MonoioExporter;
 pub use exporter::ExporterConfig;
-pub use exporter::StartError;
 
 /// Guard that flushes pending telemetry on drop.
 ///
@@ -37,11 +42,6 @@ impl From<exporter::Exporter> for TelemetryGuard {
 impl Drop for TelemetryGuard {
     fn drop(&mut self) {
         if let Some(ref exporter) = self.exporter {
-            // Best-effort non-blocking shutdown. Sends a Shutdown message
-            // through the crossbeam channel via try_send. The background
-            // monoio task will drain pending batches before exiting.
-            // We cannot await or block here without risking deadlock on
-            // the single-threaded monoio event loop.
             exporter.request_shutdown();
         }
     }
@@ -66,15 +66,12 @@ use std::time::Duration;
 pub enum InitError {
     /// A global tracing subscriber is already set.
     SubscriberAlreadySet(tracing_subscriber::util::TryInitError),
-    /// The exporter could not be started.
-    Exporter(StartError),
 }
 
 impl std::fmt::Display for InitError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::SubscriberAlreadySet(e) => write!(f, "global subscriber already set: {}", e),
-            Self::Exporter(e) => write!(f, "failed to start exporter: {}", e),
         }
     }
 }
@@ -83,7 +80,6 @@ impl std::error::Error for InitError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::SubscriberAlreadySet(e) => Some(e),
-            Self::Exporter(e) => Some(e),
         }
     }
 }
@@ -91,12 +87,6 @@ impl std::error::Error for InitError {
 impl From<tracing_subscriber::util::TryInitError> for InitError {
     fn from(e: tracing_subscriber::util::TryInitError) -> Self {
         Self::SubscriberAlreadySet(e)
-    }
-}
-
-impl From<StartError> for InitError {
-    fn from(e: StartError) -> Self {
-        Self::Exporter(e)
     }
 }
 
@@ -124,7 +114,6 @@ pub fn init_global_once(config: TelemetryConfig) -> TelemetryGuard {
 ///
 /// # Errors
 ///
-/// Returns [`InitError::Exporter`] if the exporter cannot be started.
 /// Returns [`InitError::SubscriberAlreadySet`] if a global tracing subscriber
 /// is already installed.
 pub fn try_init_global(config: TelemetryConfig) -> Result<TelemetryGuard, InitError> {
@@ -153,7 +142,7 @@ pub fn try_init_global(config: TelemetryConfig) -> Result<TelemetryGuard, InitEr
             metrics_url,
             backpressure_strategy: config.backpressure_strategy,
             ..ExporterConfig::default()
-        })?)
+        }))
     } else {
         None
     };
@@ -218,7 +207,6 @@ pub fn spawn_metrics_loop(
     interval: Duration,
 ) {
     monoio::spawn(async move {
-        // Initial delay before first collection
         monoio::time::sleep(interval).await;
         loop {
             if let Some(data) = rolly::collect_and_encode_metrics(&config) {
