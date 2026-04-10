@@ -1,0 +1,12 @@
+[package]
+name = "rolly-tokio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Tokio-based transport for rolly observability. Exporter, init helpers, and TelemetryGuard."
+keywords = ["observability", "tracing", "otlp", "telemetry", "tokio"]
+categories = ["development-tools::debugging", "development-tools::profiling"]
+
+[dependencies]
+rolly = { path = "../rolly", version = "=0.11.0" }
