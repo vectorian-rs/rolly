@@ -1593,7 +1593,10 @@ dependencies = [
 name = "rolly-tokio"
 version = "0.11.0"
 dependencies = [
+ "bytes",
+ "reqwest",
  "rolly",
+ "tokio",
 ]
 
 [[package]]
