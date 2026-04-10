@@ -142,8 +142,7 @@ pub fn build_layer(
     config: &LayerConfig,
     sink: Arc<dyn TelemetrySink>,
 ) -> impl tracing_subscriber::Layer<tracing_subscriber::Registry> {
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info,tower_http=info"));
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     let fmt_layer = if config.log_to_stderr {
         Some(
@@ -186,11 +185,6 @@ pub fn build_layer(
 /// # Panics
 ///
 /// Panics if a global tracing subscriber is already set.
-///
-/// # Deprecation
-///
-/// Use `build_layer()` for composable setups, or `rolly_tokio::init_global_once()`
-/// once the runtime crate is available.
 #[deprecated(note = "use build_layer() for composable setups, or rolly_tokio::init_global_once()")]
 pub fn init(config: TelemetryConfig) -> TelemetryGuard {
     let export_traces = config.otlp_traces_endpoint.is_some();
