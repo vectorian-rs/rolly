@@ -1,5 +1,5 @@
 [workspace]
-members = ["rolly", "rolly-tokio"]
+members = ["rolly", "rolly-tokio", "rolly-monoio"]
 resolver = "2"
 
 [workspace.package]

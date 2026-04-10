@@ -109,7 +109,7 @@ impl Exporter {
     /// Send encoded trace data to the exporter (non-blocking).
     pub fn send_traces(&self, data: Vec<u8>) {
         match self.backpressure_strategy {
-            BackpressureStrategy::Drop => {
+            BackpressureStrategy::Drop | _ => {
                 if self
                     .tx
                     .try_send(ExportMessage::Traces(Bytes::from(data)))
@@ -124,7 +124,7 @@ impl Exporter {
     /// Send encoded log data to the exporter.
     pub fn send_logs(&self, data: Vec<u8>) {
         match self.backpressure_strategy {
-            BackpressureStrategy::Drop => {
+            BackpressureStrategy::Drop | _ => {
                 if self
                     .tx
                     .try_send(ExportMessage::Logs(Bytes::from(data)))
@@ -139,7 +139,7 @@ impl Exporter {
     /// Send encoded metrics data to the exporter.
     pub fn send_metrics(&self, data: Vec<u8>) {
         match self.backpressure_strategy {
-            BackpressureStrategy::Drop => {
+            BackpressureStrategy::Drop | _ => {
                 if self
                     .tx
                     .try_send(ExportMessage::Metrics(Bytes::from(data)))
@@ -181,6 +181,7 @@ impl rolly::TelemetrySink for Exporter {
 
 /// Errors that can occur when starting the exporter.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum StartError {
     /// The HTTP client could not be built (e.g. TLS misconfiguration).
     HttpClient(reqwest::Error),

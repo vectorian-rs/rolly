@@ -42,6 +42,7 @@ pub fn telemetry_dropped_total() -> u64 {
 
 /// Configures behavior when the telemetry channel is full.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum BackpressureStrategy {
     /// Drop the message and increment `telemetry_dropped_total()`. Non-blocking.
     #[default]
