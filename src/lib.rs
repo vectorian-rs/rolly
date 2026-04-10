@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use exporter::{Exporter, ExporterConfig};
 use otlp_layer::OtlpLayer;
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
 /// Sink for encoded OTLP protobuf payloads.
 ///
@@ -110,16 +110,38 @@ impl Drop for TelemetryGuard {
     }
 }
 
-/// Initialize the telemetry stack.
+/// Configuration for building telemetry layers.
+pub struct LayerConfig {
+    /// Whether to emit JSON-formatted logs to stderr.
+    pub log_to_stderr: bool,
+    /// Whether to export traces via the sink.
+    pub export_traces: bool,
+    /// Whether to export logs via the sink.
+    pub export_logs: bool,
+    /// Service name for OTLP resource attributes.
+    pub service_name: String,
+    /// Service version for OTLP resource attributes.
+    pub service_version: String,
+    /// Deployment environment for OTLP resource attributes.
+    pub environment: String,
+    /// Custom resource attributes.
+    pub resource_attributes: Vec<(String, String)>,
+    /// Probabilistic trace sampling rate (0.0–1.0). Defaults to 1.0.
+    pub sampling_rate: f64,
+}
+
+/// Build telemetry layers without installing a global subscriber.
 ///
-/// Sets up:
-/// 1. `fmt::Layer` with JSON output to stderr (if `log_to_stderr` is true)
-/// 2. `OtlpLayer` connected to an HTTP exporter (if either OTLP endpoint is Some)
-/// 3. `EnvFilter` from `RUST_LOG` (default: `info,tower_http=info`)
-/// 4. Metrics aggregation task (if `otlp_metrics_endpoint` is Some)
+/// Returns a composed tracing layer that the caller adds to their own
+/// subscriber registry. The caller owns `.init()` / `.try_init()`.
 ///
-/// Returns a guard that flushes pending telemetry on drop.
-pub fn init(config: TelemetryConfig) -> TelemetryGuard {
+/// This does NOT install a global subscriber, spawn any tasks, or touch
+/// global state. Use this when you need to compose rolly's layers with
+/// your own.
+pub fn build_layer(
+    config: &LayerConfig,
+    sink: Arc<dyn TelemetrySink>,
+) -> impl tracing_subscriber::Layer<tracing_subscriber::Registry> {
     let env_filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info,tower_http=info"));
 
@@ -136,6 +158,41 @@ pub fn init(config: TelemetryConfig) -> TelemetryGuard {
         None
     };
 
+    let sampling_rate = config.sampling_rate.clamp(0.0, 1.0);
+    let otlp_layer = if config.export_traces || config.export_logs {
+        Some(OtlpLayer::new(otlp_layer::OtlpLayerConfig {
+            sink,
+            service_name: &config.service_name,
+            service_version: &config.service_version,
+            environment: &config.environment,
+            resource_attributes: &config.resource_attributes,
+            export_traces: config.export_traces,
+            export_logs: config.export_logs,
+            sampling_rate,
+        }))
+    } else {
+        None
+    };
+
+    env_filter.and_then(fmt_layer).and_then(otlp_layer)
+}
+
+/// Initialize the telemetry stack and set the global subscriber.
+///
+/// This is a convenience function that creates an exporter, calls
+/// `build_layer()`, installs the global subscriber, and spawns
+/// background tasks for metrics and USE polling.
+///
+/// # Panics
+///
+/// Panics if a global tracing subscriber is already set.
+///
+/// # Deprecation
+///
+/// Use `build_layer()` for composable setups, or `rolly_tokio::init_global_once()`
+/// once the runtime crate is available.
+#[deprecated(note = "use build_layer() for composable setups, or rolly_tokio::init_global_once()")]
+pub fn init(config: TelemetryConfig) -> TelemetryGuard {
     let export_traces = config.otlp_traces_endpoint.is_some();
     let export_logs = config.otlp_logs_endpoint.is_some();
     let export_metrics = config.otlp_metrics_endpoint.is_some();
@@ -145,7 +202,7 @@ pub fn init(config: TelemetryConfig) -> TelemetryGuard {
         .as_deref()
         .map(|ep| format!("{}/v1/metrics", ep));
 
-    let (otlp_layer, exporter) = if export_traces || export_logs || export_metrics {
+    let exporter = if export_traces || export_logs || export_metrics {
         let traces_url = config
             .otlp_traces_endpoint
             .as_deref()
@@ -154,7 +211,7 @@ pub fn init(config: TelemetryConfig) -> TelemetryGuard {
             .otlp_logs_endpoint
             .as_deref()
             .map(|ep| format!("{}/v1/logs", ep));
-        let exp = Exporter::start(ExporterConfig {
+        Some(Exporter::start(ExporterConfig {
             traces_url,
             logs_url,
             metrics_url: metrics_url.clone(),
@@ -163,32 +220,30 @@ pub fn init(config: TelemetryConfig) -> TelemetryGuard {
             flush_interval: Duration::from_secs(1),
             max_concurrent_exports: 4,
             backpressure_strategy: config.backpressure_strategy,
-        });
-        let sampling_rate = config.sampling_rate.unwrap_or(1.0).clamp(0.0, 1.0);
-        let layer = if export_traces || export_logs {
-            Some(OtlpLayer::new(otlp_layer::OtlpLayerConfig {
-                sink: Arc::new(exp.clone()),
-                service_name: &config.service_name,
-                service_version: &config.service_version,
-                environment: &config.environment,
-                resource_attributes: &config.resource_attributes,
-                export_traces,
-                export_logs,
-                sampling_rate,
-            }))
-        } else {
-            None
-        };
-        (layer, Some(exp))
+        }))
     } else {
-        (None, None)
+        None
     };
 
-    tracing_subscriber::registry()
-        .with(env_filter)
-        .with(fmt_layer)
-        .with(otlp_layer)
-        .init();
+    let sink: Arc<dyn TelemetrySink> = match &exporter {
+        Some(exp) => Arc::new(exp.clone()),
+        None => Arc::new(NullSink),
+    };
+
+    let layer_config = LayerConfig {
+        log_to_stderr: config.log_to_stderr,
+        export_traces,
+        export_logs,
+        service_name: config.service_name.clone(),
+        service_version: config.service_version.clone(),
+        environment: config.environment.clone(),
+        resource_attributes: config.resource_attributes.clone(),
+        sampling_rate: config.sampling_rate.unwrap_or(1.0),
+    };
+
+    let layer = build_layer(&layer_config, sink);
+
+    tracing_subscriber::registry().with(layer).init();
 
     tracing::info!(
         service.name = config.service_name.as_str(),
@@ -201,7 +256,6 @@ pub fn init(config: TelemetryConfig) -> TelemetryGuard {
         use_metrics::start(interval);
     }
 
-    // Spawn metrics aggregation task
     if let Some(ref exporter) = exporter {
         if metrics_url.is_some() {
             let flush_interval = config
@@ -209,10 +263,10 @@ pub fn init(config: TelemetryConfig) -> TelemetryGuard {
                 .unwrap_or(Duration::from_secs(10));
             let exporter = exporter.clone();
             let metrics_config = MetricsExportConfig {
-                service_name: config.service_name.clone(),
-                service_version: config.service_version.clone(),
-                environment: config.environment.clone(),
-                resource_attributes: config.resource_attributes.clone(),
+                service_name: config.service_name,
+                service_version: config.service_version,
+                environment: config.environment,
+                resource_attributes: config.resource_attributes,
                 scope_name: "rolly".to_string(),
                 scope_version: env!("CARGO_PKG_VERSION").to_string(),
                 start_time: std::time::SystemTime::now()
