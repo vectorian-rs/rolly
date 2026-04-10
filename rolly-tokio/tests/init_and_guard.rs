@@ -26,7 +26,8 @@ async fn tokio_exporter_implements_telemetry_sink() {
         traces_url: Some(format!("http://{}/v1/traces", addr)),
         flush_interval: Duration::from_millis(10),
         ..ExporterConfig::default()
-    });
+    })
+    .unwrap();
 
     let sink: Arc<dyn TelemetrySink> = Arc::new(exporter.clone());
     sink.send_traces(vec![1, 2, 3]);
@@ -110,8 +111,7 @@ fn try_init_global_returns_err_when_subscriber_already_set() {
     // Verify the return type is correct
     let _: fn(
         rolly_tokio::TelemetryConfig,
-    ) -> Result<rolly_tokio::TelemetryGuard, tracing_subscriber::util::TryInitError> =
-        rolly_tokio::try_init_global;
+    ) -> Result<rolly_tokio::TelemetryGuard, rolly_tokio::InitError> = rolly_tokio::try_init_global;
     let _ = config;
     let _ = subscriber;
 }

@@ -1,6 +1,6 @@
 use bytes::Bytes;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use rolly::bench::*;
+use rolly_tokio::bench::*;
 
 fn make_payload(size: usize) -> Vec<u8> {
     let span = SpanData {

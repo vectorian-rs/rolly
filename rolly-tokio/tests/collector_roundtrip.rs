@@ -35,8 +35,7 @@ async fn traces_logs_metrics_arrive_at_collector() {
         }
     }
 
-    #[allow(deprecated)]
-    let guard = rolly::init(rolly::TelemetryConfig {
+    let guard = rolly_tokio::init_global_once(rolly_tokio::TelemetryConfig {
         service_name: "roundtrip-test".into(),
         service_version: "0.0.1".into(),
         environment: "test".into(),

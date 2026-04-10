@@ -1,8 +1,7 @@
-/// USE metrics collector — reads `/proc/self/stat` and `/proc/self/statm` on Linux.
-///
-/// Emits `process.cpu.utilization` and `process.memory.usage` as tracing events
-/// at a configurable interval. No-op on non-Linux platforms.
-use std::time::Duration;
+//! USE metrics collector — reads `/proc/self/stat` and `/proc/self/statm` on Linux.
+//!
+//! Emits `process.cpu.utilization` and `process.memory.usage` as tracing events
+//! at a configurable interval. No-op on non-Linux platforms.
 
 /// Stateful baseline for USE metrics polling.
 ///
@@ -74,37 +73,6 @@ fn poll_once_linux(state: &mut UseMetricsState) {
     }
 }
 
-/// Start the USE metrics polling loop.
-///
-/// Spawns a background tokio task that calls `poll_once` every `interval`.
-///
-/// On non-Linux platforms this is a no-op.
-pub(crate) fn start(interval: Duration) {
-    #[cfg(target_os = "linux")]
-    {
-        tokio::spawn(poll_loop(interval));
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = interval;
-        tracing::debug!("pz-o11y: USE metrics disabled (not Linux)");
-    }
-}
-
-#[cfg(target_os = "linux")]
-async fn poll_loop(interval: Duration) {
-    let mut state = UseMetricsState::default();
-    let mut ticker = tokio::time::interval(interval);
-    // First tick fires immediately — skip it to get a baseline.
-    ticker.tick().await;
-
-    loop {
-        ticker.tick().await;
-        poll_once(&mut state);
-    }
-}
-
 #[cfg(target_os = "linux")]
 fn page_size_bytes() -> u64 {
     // SAFETY: sysconf(_SC_PAGESIZE) is always safe to call.
@@ -142,14 +110,6 @@ fn read_rss_pages() -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn start_is_noop_on_non_linux() {
-        #[cfg(not(target_os = "linux"))]
-        {
-            let _f: fn(Duration) = start;
-        }
-    }
 
     #[test]
     fn poll_once_does_not_panic() {

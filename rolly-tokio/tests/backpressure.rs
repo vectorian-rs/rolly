@@ -5,7 +5,7 @@
 use std::sync::{Arc, Barrier};
 use std::time::Instant;
 
-use rolly::bench::{BackpressureStrategy, Exporter, OtlpLayer, OtlpLayerConfig};
+use rolly_tokio::bench::{BackpressureStrategy, Exporter, OtlpLayer, OtlpLayerConfig};
 use tracing_subscriber::layer::SubscriberExt;
 
 /// Create a Dispatch backed by an OtlpLayer with a test exporter of the given capacity
@@ -19,7 +19,7 @@ fn make_dispatch(
     strategy: BackpressureStrategy,
 ) -> (
     tracing::Dispatch,
-    tokio::sync::mpsc::Receiver<rolly::bench::ExportMessage>,
+    tokio::sync::mpsc::Receiver<rolly_tokio::bench::ExportMessage>,
 ) {
     let (exporter, rx) = Exporter::start_test_with_capacity(capacity, strategy);
     let layer = OtlpLayer::new(OtlpLayerConfig {
@@ -38,7 +38,7 @@ fn make_dispatch(
 
 #[test]
 fn hot_path_does_not_block_when_channel_full() {
-    let before = rolly::telemetry_dropped_total();
+    let before = rolly_tokio::telemetry_dropped_total();
     let (dispatch, _rx) = make_dispatch(4, true, false, 1.0, BackpressureStrategy::Drop);
 
     let start = Instant::now();
@@ -50,7 +50,7 @@ fn hot_path_does_not_block_when_channel_full() {
     });
     let elapsed = start.elapsed();
 
-    let delta = rolly::telemetry_dropped_total() - before;
+    let delta = rolly_tokio::telemetry_dropped_total() - before;
     assert!(
         elapsed.as_millis() < 500,
         "hot path blocked: took {}ms (limit 500ms)",
@@ -65,7 +65,7 @@ fn hot_path_does_not_block_when_channel_full() {
 
 #[test]
 fn hot_path_nonblocking_under_concurrent_pressure() {
-    let before = rolly::telemetry_dropped_total();
+    let before = rolly_tokio::telemetry_dropped_total();
     let (dispatch, _rx) = make_dispatch(4, true, false, 1.0, BackpressureStrategy::Drop);
     let barrier = Arc::new(Barrier::new(8));
 
@@ -93,7 +93,7 @@ fn hot_path_nonblocking_under_concurrent_pressure() {
         .max()
         .unwrap();
 
-    let delta = rolly::telemetry_dropped_total() - before;
+    let delta = rolly_tokio::telemetry_dropped_total() - before;
     assert!(
         max_elapsed.as_secs() < 2,
         "slowest thread took {:?} (limit 2s)",
@@ -114,7 +114,7 @@ fn dropped_total_increments_accurately() {
     });
 
     // Channel is now full -- next 100 sends should all be dropped
-    let before = rolly::telemetry_dropped_total();
+    let before = rolly_tokio::telemetry_dropped_total();
     tracing::dispatcher::with_default(&dispatch, || {
         for _ in 0..100 {
             let span = tracing::info_span!("drop-span");
@@ -122,7 +122,7 @@ fn dropped_total_increments_accurately() {
         }
     });
 
-    let delta = rolly::telemetry_dropped_total() - before;
+    let delta = rolly_tokio::telemetry_dropped_total() - before;
     // Use >= because the global AtomicU64 may be incremented by parallel tests
     assert!(delta >= 100, "expected at least 100 drops, got {}", delta);
 }
@@ -230,7 +230,7 @@ fn no_thread_starves_under_sustained_backpressure() {
 
 #[test]
 fn events_also_nonblocking_under_backpressure() {
-    let before = rolly::telemetry_dropped_total();
+    let before = rolly_tokio::telemetry_dropped_total();
     let (dispatch, _rx) = make_dispatch(2, false, true, 1.0, BackpressureStrategy::Drop);
 
     let start = Instant::now();
@@ -241,7 +241,7 @@ fn events_also_nonblocking_under_backpressure() {
     });
     let elapsed = start.elapsed();
 
-    let delta = rolly::telemetry_dropped_total() - before;
+    let delta = rolly_tokio::telemetry_dropped_total() - before;
     assert!(
         elapsed.as_millis() < 500,
         "event hot path blocked: took {}ms (limit 500ms)",

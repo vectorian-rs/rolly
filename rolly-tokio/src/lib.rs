@@ -6,8 +6,10 @@
 mod exporter;
 
 // Re-export the public API from the exporter module
+pub use exporter::ExportMessage;
 pub use exporter::Exporter as TokioExporter;
 pub use exporter::ExporterConfig;
+pub use exporter::StartError;
 
 /// Guard that flushes pending telemetry on drop.
 ///
@@ -33,14 +35,37 @@ impl Drop for TelemetryGuard {
             handle.abort();
         }
         if let Some(ref exporter) = self.exporter {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build();
-            if let Ok(rt) = rt {
-                rt.block_on(async {
-                    exporter.flush().await;
-                    exporter.shutdown().await;
-                });
+            let flush_shutdown = async {
+                exporter.flush().await;
+                exporter.shutdown().await;
+            };
+            // If we're inside a tokio runtime, use block_in_place to avoid
+            // the "cannot start a runtime from within a runtime" panic.
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                // block_in_place requires a multi-thread runtime; on
+                // current_thread it would deadlock. In that case, spawn
+                // the work and hope the runtime lives long enough.
+                if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread {
+                    tokio::task::block_in_place(|| {
+                        handle.block_on(flush_shutdown);
+                    });
+                } else {
+                    // current_thread runtime: spawn the flush and let it
+                    // complete on the next poll. We cannot block here.
+                    let exporter = exporter.clone();
+                    handle.spawn(async move {
+                        exporter.flush().await;
+                        exporter.shutdown().await;
+                    });
+                }
+            } else {
+                // No runtime active — create a temporary one for shutdown.
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build();
+                if let Ok(rt) = rt {
+                    rt.block_on(flush_shutdown);
+                }
             }
         }
     }
@@ -49,8 +74,54 @@ impl Drop for TelemetryGuard {
 // Re-export everything from rolly core
 pub use rolly::*;
 
+#[cfg(feature = "_bench")]
+#[doc(hidden)]
+pub mod bench {
+    pub use crate::exporter::{ExportMessage, Exporter, ExporterConfig};
+    pub use rolly::bench::*;
+}
+
 use std::sync::Arc;
 use std::time::Duration;
+
+/// Errors returned by [`try_init_global`].
+#[derive(Debug)]
+pub enum InitError {
+    /// A global tracing subscriber is already set.
+    SubscriberAlreadySet(tracing_subscriber::util::TryInitError),
+    /// The exporter could not be started (e.g. no tokio runtime, TLS failure).
+    Exporter(StartError),
+}
+
+impl std::fmt::Display for InitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SubscriberAlreadySet(e) => write!(f, "global subscriber already set: {}", e),
+            Self::Exporter(e) => write!(f, "failed to start exporter: {}", e),
+        }
+    }
+}
+
+impl std::error::Error for InitError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::SubscriberAlreadySet(e) => Some(e),
+            Self::Exporter(e) => Some(e),
+        }
+    }
+}
+
+impl From<tracing_subscriber::util::TryInitError> for InitError {
+    fn from(e: tracing_subscriber::util::TryInitError) -> Self {
+        Self::SubscriberAlreadySet(e)
+    }
+}
+
+impl From<StartError> for InitError {
+    fn from(e: StartError) -> Self {
+        Self::Exporter(e)
+    }
+}
 
 /// Initialize the full telemetry stack and set the global subscriber.
 ///
@@ -60,20 +131,27 @@ use std::time::Duration;
 ///
 /// # Panics
 ///
-/// Panics if a global tracing subscriber is already set. For fallible
+/// Panics if initialization fails for any reason. For fallible
 /// initialization, use [`try_init_global`].
+///
+/// # Requirements
+///
+/// Must be called from within a tokio runtime context.
 pub fn init_global_once(config: TelemetryConfig) -> TelemetryGuard {
     match try_init_global(config) {
         Ok(guard) => guard,
-        Err(e) => panic!("failed to set global subscriber: {}", e),
+        Err(e) => panic!("failed to initialize telemetry: {}", e),
     }
 }
 
-/// Same as [`init_global_once`], but returns an error instead of panicking
-/// if a global subscriber is already set.
-pub fn try_init_global(
-    config: TelemetryConfig,
-) -> Result<TelemetryGuard, tracing_subscriber::util::TryInitError> {
+/// Same as [`init_global_once`], but returns an error instead of panicking.
+///
+/// # Errors
+///
+/// Returns [`InitError::Exporter`] if no tokio runtime is active or the
+/// HTTP client cannot be built. Returns [`InitError::SubscriberAlreadySet`]
+/// if a global tracing subscriber is already installed.
+pub fn try_init_global(config: TelemetryConfig) -> Result<TelemetryGuard, InitError> {
     use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
     let export_traces = config.otlp_traces_endpoint.is_some();
@@ -100,7 +178,7 @@ pub fn try_init_global(
             metrics_url,
             backpressure_strategy: config.backpressure_strategy,
             ..ExporterConfig::default()
-        }))
+        })?)
     } else {
         None
     };

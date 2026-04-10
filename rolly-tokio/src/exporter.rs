@@ -1,23 +1,7 @@
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use bytes::Bytes;
 use tokio::sync::mpsc;
-
-/// Total number of telemetry messages dropped due to a full channel.
-static DROPPED_TOTAL: AtomicU64 = AtomicU64::new(0);
-
-/// Return the total number of dropped telemetry messages.
-#[allow(dead_code)] // used once init_global_once wires it up
-pub fn dropped_total() -> u64 {
-    DROPPED_TOTAL.load(Ordering::Relaxed)
-}
-
-/// Reset the drop counter (test-only).
-#[cfg(test)]
-pub(crate) fn reset_dropped_total() {
-    DROPPED_TOTAL.store(0, Ordering::Relaxed);
-}
 
 pub use rolly::BackpressureStrategy;
 
@@ -69,12 +53,20 @@ pub struct Exporter {
 
 impl Exporter {
     /// Start the exporter background task. Returns a handle for sending data.
-    pub fn start(config: ExporterConfig) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the HTTP client cannot be built (e.g. TLS
+    /// backend misconfiguration) or if no tokio runtime is active.
+    pub fn start(config: ExporterConfig) -> Result<Self, StartError> {
+        // Verify a tokio runtime is available before doing anything.
+        let _handle = tokio::runtime::Handle::try_current().map_err(|_| StartError::NoRuntime)?;
+
         let (tx, rx) = mpsc::channel(config.channel_capacity);
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
             .build()
-            .expect("failed to build reqwest client");
+            .map_err(StartError::HttpClient)?;
         tokio::spawn(exporter_loop(
             rx,
             client,
@@ -85,21 +77,21 @@ impl Exporter {
             config.flush_interval,
             config.max_concurrent_exports,
         ));
-        Self {
+        Ok(Self {
             tx,
             backpressure_strategy: config.backpressure_strategy,
-        }
+        })
     }
 
     /// Create an exporter for testing that doesn't spawn the HTTP loop.
     /// Returns the exporter and receiver so tests can read messages directly.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "_bench"))]
     pub fn start_test() -> (Self, mpsc::Receiver<ExportMessage>) {
         Self::start_test_with_capacity(64, BackpressureStrategy::Drop)
     }
 
     /// Create a test exporter with a specific channel capacity and backpressure strategy.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "_bench"))]
     pub fn start_test_with_capacity(
         capacity: usize,
         strategy: BackpressureStrategy,
@@ -123,7 +115,7 @@ impl Exporter {
                     .try_send(ExportMessage::Traces(Bytes::from(data)))
                     .is_err()
                 {
-                    DROPPED_TOTAL.fetch_add(1, Ordering::Relaxed);
+                    rolly::increment_dropped_total();
                 }
             }
         }
@@ -138,7 +130,7 @@ impl Exporter {
                     .try_send(ExportMessage::Logs(Bytes::from(data)))
                     .is_err()
                 {
-                    DROPPED_TOTAL.fetch_add(1, Ordering::Relaxed);
+                    rolly::increment_dropped_total();
                 }
             }
         }
@@ -153,7 +145,7 @@ impl Exporter {
                     .try_send(ExportMessage::Metrics(Bytes::from(data)))
                     .is_err()
                 {
-                    DROPPED_TOTAL.fetch_add(1, Ordering::Relaxed);
+                    rolly::increment_dropped_total();
                 }
             }
         }
@@ -184,6 +176,38 @@ impl rolly::TelemetrySink for Exporter {
         self.send_metrics(data);
     }
 }
+
+// ── Error types ─────────────────────────────────────────────────────────
+
+/// Errors that can occur when starting the exporter.
+#[derive(Debug)]
+pub enum StartError {
+    /// The HTTP client could not be built (e.g. TLS misconfiguration).
+    HttpClient(reqwest::Error),
+    /// No tokio runtime is active. Call from within a `#[tokio::main]`
+    /// or `tokio::runtime::Runtime` context.
+    NoRuntime,
+}
+
+impl std::fmt::Display for StartError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::HttpClient(e) => write!(f, "failed to build HTTP client: {}", e),
+            Self::NoRuntime => write!(f, "no tokio runtime active"),
+        }
+    }
+}
+
+impl std::error::Error for StartError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::HttpClient(e) => Some(e),
+            Self::NoRuntime => None,
+        }
+    }
+}
+
+// ── Exporter background loop ────────────────────────────────────────────
 
 const RETRY_DELAYS: [Duration; 3] = [
     Duration::from_millis(100),
@@ -427,32 +451,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn drop_counter_starts_at_zero() {
-        reset_dropped_total();
-        assert_eq!(dropped_total(), 0);
+    fn drop_counter_is_callable() {
+        let _count = rolly::telemetry_dropped_total();
     }
 
     #[tokio::test]
     async fn drop_counter_increments_on_channel_full() {
-        let before = dropped_total();
+        let before = rolly::telemetry_dropped_total();
         // Capacity 2: fill channel, then the 3rd send should drop
         let (exporter, _rx) = Exporter::start_test_with_capacity(2, BackpressureStrategy::Drop);
         exporter.send_traces(vec![0x0A]);
         exporter.send_traces(vec![0x0A]);
         // Channel is full now
         exporter.send_traces(vec![0x0A]);
-        let delta = dropped_total() - before;
+        let delta = rolly::telemetry_dropped_total() - before;
         assert!(delta >= 1, "expected at least 1 drop, got {}", delta);
     }
 
     #[tokio::test]
     async fn drop_counter_increments_for_logs_and_traces() {
-        let before = dropped_total();
+        let before = rolly::telemetry_dropped_total();
         let (exporter, _rx) = Exporter::start_test_with_capacity(1, BackpressureStrategy::Drop);
         exporter.send_traces(vec![0x0A]); // fills the channel
         exporter.send_traces(vec![0x0A]); // dropped
         exporter.send_logs(vec![0x0A]); // dropped
-        let delta = dropped_total() - before;
+        let delta = rolly::telemetry_dropped_total() - before;
         assert!(delta >= 2, "expected at least 2 drops, got {}", delta);
     }
 
@@ -475,7 +498,7 @@ mod tests {
             Some("http://127.0.0.1:1/v1/traces".to_string()),
             Some("http://127.0.0.1:1/v1/logs".to_string()),
         );
-        let exporter = Exporter::start(config);
+        let exporter = Exporter::start(config).unwrap();
 
         exporter.send_traces(vec![0x0A, 0x00]);
         exporter.send_logs(vec![0x0A, 0x00]);
@@ -489,7 +512,7 @@ mod tests {
             Some("http://127.0.0.1:1/v1/traces".to_string()),
             Some("http://127.0.0.1:1/v1/logs".to_string()),
         );
-        let exporter = Exporter::start(config);
+        let exporter = Exporter::start(config).unwrap();
 
         tokio::time::timeout(Duration::from_secs(5), exporter.flush())
             .await
@@ -598,7 +621,7 @@ mod tests {
             Some(format!("http://{}/v1/traces", addr)),
             Some(format!("http://{}/v1/logs", addr)),
         );
-        let exporter = Exporter::start(config);
+        let exporter = Exporter::start(config).unwrap();
 
         exporter.send_traces(vec![0x0A, 0x00]);
         exporter.send_logs(vec![0x0A, 0x00]);
@@ -667,7 +690,7 @@ mod tests {
 
         // Only traces_url set, logs_url is None
         let config = test_config(Some(format!("http://{}/v1/traces", addr)), None);
-        let exporter = Exporter::start(config);
+        let exporter = Exporter::start(config).unwrap();
 
         exporter.send_traces(vec![0x0A, 0x00]);
         exporter.send_logs(vec![0x0A, 0x00]); // should be silently dropped
@@ -755,7 +778,7 @@ mod tests {
             max_concurrent_exports: 4,
             backpressure_strategy: BackpressureStrategy::Drop,
         };
-        let exporter = Exporter::start(config);
+        let exporter = Exporter::start(config).unwrap();
 
         // Send exactly batch_size items
         let payload = vec![0x0A, 0x00]; // minimal protobuf
@@ -814,7 +837,7 @@ mod tests {
             max_concurrent_exports: 4,
             backpressure_strategy: BackpressureStrategy::Drop,
         };
-        let exporter = Exporter::start(config);
+        let exporter = Exporter::start(config).unwrap();
 
         // Send 1 item — won't reach batch_size, must flush on interval
         exporter.send_traces(vec![0x0A, 0x00]);
@@ -864,7 +887,7 @@ mod tests {
             max_concurrent_exports: 4,
             backpressure_strategy: BackpressureStrategy::Drop,
         };
-        let exporter = Exporter::start(config);
+        let exporter = Exporter::start(config).unwrap();
 
         exporter.send_traces(vec![0x0A, 0x00]);
         exporter.flush().await;
@@ -914,7 +937,7 @@ mod tests {
             max_concurrent_exports: 4,
             backpressure_strategy: BackpressureStrategy::Drop,
         };
-        let exporter = Exporter::start(config);
+        let exporter = Exporter::start(config).unwrap();
 
         exporter.send_traces(vec![0x0A, 0x00]);
         exporter.shutdown().await;
@@ -971,7 +994,7 @@ mod tests {
             max_concurrent_exports: 4,
             backpressure_strategy: BackpressureStrategy::Drop,
         };
-        let exporter = Exporter::start(config);
+        let exporter = Exporter::start(config).unwrap();
 
         // Fill trace batch (batch_size = 2)
         exporter.send_traces(vec![0x0A, 0x00]);
@@ -1054,7 +1077,7 @@ mod tests {
             max_concurrent_exports: 8,
             backpressure_strategy: BackpressureStrategy::Drop,
         };
-        let exporter = Exporter::start(config);
+        let exporter = Exporter::start(config).unwrap();
 
         // Send many items rapidly to trigger concurrent exports
         for _ in 0..8 {
@@ -1120,7 +1143,7 @@ mod tests {
             max_concurrent_exports: max_exports,
             backpressure_strategy: BackpressureStrategy::Drop,
         };
-        let exporter = Exporter::start(config);
+        let exporter = Exporter::start(config).unwrap();
 
         for _ in 0..8 {
             exporter.send_traces(vec![0x0A, 0x00]);

@@ -82,7 +82,8 @@ pub fn make_layer_and_exporter(
         flush_interval: std::time::Duration::from_millis(10),
         backpressure_strategy: BackpressureStrategy::Drop,
         ..ExporterConfig::default()
-    });
+    })
+    .unwrap();
 
     let sink: Arc<dyn TelemetrySink> = Arc::new(exporter.clone());
     let layer_config = LayerConfig {

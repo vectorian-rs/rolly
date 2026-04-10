@@ -112,8 +112,7 @@ async fn vector_e2e_traces_logs_metrics() {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // ── Initialize telemetry ─────────────────────────────────────────
-    #[allow(deprecated)]
-    let guard = rolly::init(rolly::TelemetryConfig {
+    let guard = rolly_tokio::init_global_once(rolly_tokio::TelemetryConfig {
         service_name: "vector-e2e-test".into(),
         service_version: "0.1.0".into(),
         environment: "e2e".into(),

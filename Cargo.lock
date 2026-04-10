@@ -277,9 +277,9 @@ checksum = "3a822ea5bc7590f9d40f1ba12c0dc3c2760f3482c6984db1573ad11031420831"
 
 [[package]]
 name = "colorchoice"
-version = "1.0.4"
+version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b05b61dc5112cbb17e4b6cd61790d9845d13888356391624cbe7e41efeac1e75"
+checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
 name = "const-hex"
@@ -419,18 +419,18 @@ checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 
 [[package]]
 name = "env_filter"
-version = "1.0.0"
+version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a1c3cc8e57274ec99de65301228b537f1e4eedc1b8e0f9411c6caac8ae7308f"
+checksum = "32e90c2accc4b07a8456ea0debdc2e7587bdd890680d71173a15d4ae604f6eef"
 dependencies = [
  "log",
 ]
 
 [[package]]
 name = "env_logger"
-version = "0.11.9"
+version = "0.11.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b2daee4ea451f429a58296525ddf28b45a3b64f1acf6587e2067437bb11e218d"
+checksum = "0621c04f2196ac3f488dd583365b9c09be011a4ab8b9f37248ffcc8f6198b56a"
 dependencies = [
  "env_filter",
  "log",
@@ -1568,9 +1568,7 @@ name = "rolly"
 version = "0.11.0"
 dependencies = [
  "blake3",
- "bytes",
  "criterion",
- "inferno",
  "libc",
  "opentelemetry",
  "opentelemetry-proto",
@@ -1578,11 +1576,9 @@ dependencies = [
  "proptest",
  "prost",
  "rand",
- "reqwest",
  "serde",
  "serde_json",
  "stats_alloc",
- "tokio",
  "toml",
  "tracing",
  "tracing-subscriber",
@@ -1595,10 +1591,14 @@ version = "0.11.0"
 dependencies = [
  "bytes",
  "criterion",
+ "inferno",
+ "opentelemetry",
+ "opentelemetry_sdk",
  "reqwest",
  "rolly",
  "serde_json",
  "tokio",
+ "toml",
  "tracing",
  "tracing-subscriber",
 ]

@@ -37,7 +37,7 @@ fn main() {
 // ── Profiling: optimized rolly ─────────────────────────────────────────
 
 fn profile_after() {
-    use rolly::bench::*;
+    use rolly_tokio::bench::*;
     let registry = MetricsRegistry::new();
     let counter = registry.counter("test", "test");
     counter.add(

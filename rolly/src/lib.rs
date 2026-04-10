@@ -1,5 +1,4 @@
 pub mod constants;
-pub(crate) mod exporter;
 pub mod metrics;
 pub(crate) mod otlp_layer;
 pub(crate) mod otlp_log;
@@ -9,16 +8,47 @@ pub(crate) mod proto;
 pub mod trace_id;
 pub(crate) mod use_metrics;
 
-pub use exporter::BackpressureStrategy;
 pub use metrics::{counter, gauge, histogram, Counter, Gauge, Histogram};
 pub use use_metrics::UseMetricsState;
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use exporter::{Exporter, ExporterConfig};
 use otlp_layer::OtlpLayer;
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
+use tracing_subscriber::{fmt, EnvFilter, Layer};
+
+// ── Drop counter ────────────────────────────────────────────────────────
+
+/// Global counter for telemetry messages dropped due to a full channel.
+///
+/// Shared across all exporter implementations (tokio, monoio, etc.).
+static DROPPED_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+/// Increment the global telemetry drop counter.
+///
+/// Called by exporter implementations when a message is dropped
+/// due to backpressure.
+pub fn increment_dropped_total() {
+    DROPPED_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Return the total number of telemetry messages dropped due to a full channel.
+pub fn telemetry_dropped_total() -> u64 {
+    DROPPED_TOTAL.load(Ordering::Relaxed)
+}
+
+// ── BackpressureStrategy ────────────────────────────────────────────────
+
+/// Configures behavior when the telemetry channel is full.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BackpressureStrategy {
+    /// Drop the message and increment `telemetry_dropped_total()`. Non-blocking.
+    #[default]
+    Drop,
+}
+
+// ── TelemetrySink ───────────────────────────────────────────────────────
 
 /// Sink for encoded OTLP protobuf payloads.
 ///
@@ -50,6 +80,8 @@ impl TelemetrySink for NullSink {
     fn send_logs(&self, _data: Vec<u8>) {}
     fn send_metrics(&self, _data: Vec<u8>) {}
 }
+
+// ── Configuration ───────────────────────────────────────────────────────
 
 /// Configuration for the telemetry stack.
 pub struct TelemetryConfig {
@@ -85,29 +117,6 @@ pub struct TelemetryConfig {
     /// Custom OTel resource attributes appended after the standard three
     /// (service.name, service.version, deployment.environment).
     pub resource_attributes: Vec<(String, String)>,
-}
-
-/// Guard that flushes pending telemetry on drop.
-///
-/// Hold this in your main function to ensure all spans are exported before shutdown.
-pub struct TelemetryGuard {
-    exporter: Option<Exporter>,
-}
-
-impl Drop for TelemetryGuard {
-    fn drop(&mut self) {
-        if let Some(ref exporter) = self.exporter {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build();
-            if let Ok(rt) = rt {
-                rt.block_on(async {
-                    exporter.flush().await;
-                    exporter.shutdown().await;
-                });
-            }
-        }
-    }
 }
 
 /// Configuration for building telemetry layers.
@@ -176,130 +185,7 @@ pub fn build_layer(
     env_filter.and_then(fmt_layer).and_then(otlp_layer)
 }
 
-/// Initialize the telemetry stack and set the global subscriber.
-///
-/// This is a convenience function that creates an exporter, calls
-/// `build_layer()`, installs the global subscriber, and spawns
-/// background tasks for metrics and USE polling.
-///
-/// # Panics
-///
-/// Panics if a global tracing subscriber is already set.
-#[deprecated(note = "use build_layer() for composable setups, or rolly_tokio::init_global_once()")]
-pub fn init(config: TelemetryConfig) -> TelemetryGuard {
-    let export_traces = config.otlp_traces_endpoint.is_some();
-    let export_logs = config.otlp_logs_endpoint.is_some();
-    let export_metrics = config.otlp_metrics_endpoint.is_some();
-
-    let metrics_url = config
-        .otlp_metrics_endpoint
-        .as_deref()
-        .map(|ep| format!("{}/v1/metrics", ep));
-
-    let exporter = if export_traces || export_logs || export_metrics {
-        let traces_url = config
-            .otlp_traces_endpoint
-            .as_deref()
-            .map(|ep| format!("{}/v1/traces", ep));
-        let logs_url = config
-            .otlp_logs_endpoint
-            .as_deref()
-            .map(|ep| format!("{}/v1/logs", ep));
-        Some(Exporter::start(ExporterConfig {
-            traces_url,
-            logs_url,
-            metrics_url: metrics_url.clone(),
-            channel_capacity: 1024,
-            batch_size: 512,
-            flush_interval: Duration::from_secs(1),
-            max_concurrent_exports: 4,
-            backpressure_strategy: config.backpressure_strategy,
-        }))
-    } else {
-        None
-    };
-
-    let sink: Arc<dyn TelemetrySink> = match &exporter {
-        Some(exp) => Arc::new(exp.clone()),
-        None => Arc::new(NullSink),
-    };
-
-    let layer_config = LayerConfig {
-        log_to_stderr: config.log_to_stderr,
-        export_traces,
-        export_logs,
-        service_name: config.service_name.clone(),
-        service_version: config.service_version.clone(),
-        environment: config.environment.clone(),
-        resource_attributes: config.resource_attributes.clone(),
-        sampling_rate: config.sampling_rate.unwrap_or(1.0),
-    };
-
-    let layer = build_layer(&layer_config, sink);
-
-    tracing_subscriber::registry().with(layer).init();
-
-    tracing::info!(
-        service.name = config.service_name.as_str(),
-        service.version = config.service_version.as_str(),
-        environment = config.environment.as_str(),
-        "telemetry initialized"
-    );
-
-    if let Some(interval) = config.use_metrics_interval {
-        use_metrics::start(interval);
-    }
-
-    if let Some(ref exporter) = exporter {
-        if metrics_url.is_some() {
-            let flush_interval = config
-                .metrics_flush_interval
-                .unwrap_or(Duration::from_secs(10));
-            let exporter = exporter.clone();
-            let metrics_config = MetricsExportConfig {
-                service_name: config.service_name,
-                service_version: config.service_version,
-                environment: config.environment,
-                resource_attributes: config.resource_attributes,
-                scope_name: "rolly".to_string(),
-                scope_version: env!("CARGO_PKG_VERSION").to_string(),
-                start_time: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos() as u64,
-            };
-            tokio::spawn(async move {
-                metrics_aggregation_loop(exporter, flush_interval, metrics_config).await;
-            });
-        }
-    }
-
-    TelemetryGuard { exporter }
-}
-
-/// Background task that periodically collects and exports aggregated metrics.
-async fn metrics_aggregation_loop(
-    exporter: Exporter,
-    flush_interval: Duration,
-    config: MetricsExportConfig,
-) {
-    let mut interval = tokio::time::interval(flush_interval);
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    // Consume the first immediate tick
-    interval.tick().await;
-
-    loop {
-        interval.tick().await;
-        if let Some(data) = collect_and_encode_metrics(&config) {
-            exporter.send_metrics(data);
-        }
-    }
-}
-
-/// Return the total number of telemetry messages dropped due to a full channel.
-pub fn telemetry_dropped_total() -> u64 {
-    exporter::dropped_total()
-}
+// ── Metrics export ──────────────────────────────────────────────────────
 
 /// Configuration for metrics export encoding.
 pub struct MetricsExportConfig {
@@ -377,10 +263,11 @@ pub fn collect_use_metrics(state: &mut UseMetricsState) {
     use_metrics::poll_once(state);
 }
 
+// ── Bench internals ─────────────────────────────────────────────────────
+
 #[cfg(feature = "_bench")]
 #[doc(hidden)]
 pub mod bench {
-    pub use crate::exporter::{BackpressureStrategy, ExportMessage, Exporter, ExporterConfig};
     pub use crate::metrics::{
         counter, gauge, global_registry, histogram, Attrs, Counter, CounterDataPoint, Exemplar,
         ExemplarValue, Gauge, GaugeDataPoint, Histogram, HistogramDataPoint, MetricSnapshot,
@@ -398,6 +285,7 @@ pub mod bench {
     };
     pub use crate::proto::{encode_message_field, encode_message_field_in_place};
     pub use crate::trace_id::{generate_span_id, generate_trace_id, hex_encode};
+    pub use crate::BackpressureStrategy;
 
     #[allow(clippy::result_unit_err)]
     pub fn hex_to_bytes_16(s: &str) -> Result<[u8; 16], ()> {

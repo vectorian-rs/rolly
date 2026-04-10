@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
-use rolly::bench::*;
+use rolly_tokio::bench::*;
 use tracing_subscriber::layer::SubscriberExt;
 
 /// Create a Dispatch backed by an OtlpLayer with a large-capacity test exporter.
