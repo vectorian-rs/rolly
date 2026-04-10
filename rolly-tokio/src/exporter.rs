@@ -8,6 +8,7 @@ use tokio::sync::mpsc;
 static DROPPED_TOTAL: AtomicU64 = AtomicU64::new(0);
 
 /// Return the total number of dropped telemetry messages.
+#[allow(dead_code)] // used once init_global_once wires it up
 pub fn dropped_total() -> u64 {
     DROPPED_TOTAL.load(Ordering::Relaxed)
 }
@@ -31,6 +32,8 @@ pub enum ExportMessage {
 }
 
 /// Configuration for the exporter.
+///
+/// Use `Default` for standard values (1024 channel, 512 batch, 1s flush, 4 concurrent).
 pub struct ExporterConfig {
     pub traces_url: Option<String>,
     pub logs_url: Option<String>,
@@ -40,6 +43,21 @@ pub struct ExporterConfig {
     pub flush_interval: Duration,
     pub max_concurrent_exports: usize,
     pub backpressure_strategy: BackpressureStrategy,
+}
+
+impl Default for ExporterConfig {
+    fn default() -> Self {
+        Self {
+            traces_url: None,
+            logs_url: None,
+            metrics_url: None,
+            channel_capacity: 1024,
+            batch_size: 512,
+            flush_interval: Duration::from_secs(1),
+            max_concurrent_exports: 4,
+            backpressure_strategy: BackpressureStrategy::Drop,
+        }
+    }
 }
 
 /// Handle to the exporter background task.

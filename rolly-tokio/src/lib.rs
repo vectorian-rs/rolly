@@ -1,9 +1,13 @@
 //! Tokio-based transport for the rolly observability crate.
 //!
-//! Provides the exporter, `init_global_once`, and `TelemetryGuard` for
-//! batching and shipping OTLP telemetry over HTTP using tokio.
+//! Provides [`TokioExporter`] for batching and shipping OTLP telemetry
+//! over HTTP, plus convenience functions for one-liner telemetry setup.
 
-pub mod exporter;
+mod exporter;
+
+// Re-export the public API from the exporter module
+pub use exporter::Exporter as TokioExporter;
+pub use exporter::ExporterConfig;
 
 // Re-export everything from rolly core
 pub use rolly::*;
