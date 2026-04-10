@@ -1706,7 +1706,7 @@ dependencies = [
 
 [[package]]
 name = "rolly"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "blake3",
  "criterion",
@@ -1728,7 +1728,7 @@ dependencies = [
 
 [[package]]
 name = "rolly-monoio"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "bytes",
  "crossbeam-channel",
@@ -1740,7 +1740,7 @@ dependencies = [
 
 [[package]]
 name = "rolly-tokio"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "bytes",
  "criterion",

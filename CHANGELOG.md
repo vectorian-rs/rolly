@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-04-10
+
+### Added
+- **New crate: `rolly-monoio`** — monoio-based transport for thread-per-core runtimes
+  - `MonoioExporter` using crossbeam channels and raw TCP HTTP/1.1 POST
+  - `init_global_once()` / `try_init_global()` for monoio runtime context
+  - `TelemetryGuard` with best-effort non-blocking drop
+  - Adaptive poll loop (10ms active, 100ms idle) to reduce CPU usage at idle
+  - 21 tests including e2e roundtrip and backpressure validation
+
+### Changed
+- `shutdown()` in rolly-monoio now waits for drain completion (was fire-and-forget)
+- `#[non_exhaustive]` added to `BackpressureStrategy`, `StartError`, and `InitError` across all crates — adding variants in future releases is no longer semver-breaking
+
 ## [0.12.0] - 2026-04-10
 
 ### Added
@@ -144,7 +158,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Async batch exporter with configurable endpoints
 - crates.io packaging and metadata
 
-[Unreleased]: https://github.com/vectorian-rs/rolly/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/vectorian-rs/rolly/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/vectorian-rs/rolly/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/vectorian-rs/rolly/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/vectorian-rs/rolly/compare/v0.9.0...v0.11.0
 [0.9.0]: https://github.com/vectorian-rs/rolly/compare/v0.5.1...v0.9.0
