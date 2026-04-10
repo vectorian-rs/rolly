@@ -7,9 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-04-10
+
 ### Added
+- `TelemetrySink` trait — runtime-agnostic transport boundary for OTLP signals
+- `NullSink` — no-op sink for stderr-only setups, CLI tools, and tests
+- `build_layer()` + `LayerConfig` — composable layer construction without installing a global subscriber
+- `collect_and_encode_metrics()` + `MetricsExportConfig` — runtime-agnostic metrics collection and OTLP encoding
+- `UseMetricsState` + `collect_use_metrics()` — runtime-agnostic USE metrics polling with explicit state ownership
 - Custom `resource_attributes` field on `TelemetryConfig` for user-defined OTLP resource key-value pairs
-- Test verifying custom resource attributes appear in exported trace protobuf
+
+### Changed
+- `OtlpLayer` now holds `Arc<dyn TelemetrySink>` instead of `Exporter` directly
+- `OtlpLayerConfig.exporter` renamed to `OtlpLayerConfig.sink` (takes `Arc<dyn TelemetrySink>`)
+- `metrics_aggregation_loop` refactored to use `collect_and_encode_metrics()` internally
+- `use_metrics` refactored: `poll_loop` now delegates to `poll_once(&mut UseMetricsState)`
+
+### Deprecated
+- `init()` — use `build_layer()` for composable setups, or `rolly_tokio::init_global_once()` when available
+
+### Removed
+- **Breaking:** Tower middleware (`CfRequestIdLayer`, `PropagationLayer`) — moved to downstream frameworks
+- **Breaking:** `tower` feature flag and `tower`, `http`, `pin-project-lite` dependencies
 
 ## [0.9.0] - 2026-03-17
 
@@ -94,7 +113,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Async batch exporter with configurable endpoints
 - crates.io packaging and metadata
 
-[Unreleased]: https://github.com/vectorian-rs/rolly/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/vectorian-rs/rolly/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/vectorian-rs/rolly/compare/v0.9.0...v0.11.0
 [0.9.0]: https://github.com/vectorian-rs/rolly/compare/v0.5.1...v0.9.0
 [0.5.1]: https://github.com/vectorian-rs/rolly/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/vectorian-rs/rolly/compare/v0.4.0...v0.5.0
