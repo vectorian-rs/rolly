@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-04-10
+
+### Added
+- **New crate: `rolly-tokio`** — tokio-based transport for rolly observability
+  - `TokioExporter` — batching HTTP exporter with retry and concurrency control
+  - `ExporterConfig` with `Default` impl (1024 channel, 512 batch, 1s flush, 4 concurrent)
+  - `init_global_once()` / `try_init_global()` — one-liner telemetry setup
+  - `spawn_metrics_loop()` — background metrics aggregation
+  - `TelemetryGuard` — graceful flush/shutdown on drop, safe in async contexts
+  - `InitError` / `StartError` — proper error types (no panics in fallible paths)
+- `increment_dropped_total()` in rolly core — shared drop counter for all exporter implementations
+- `BackpressureStrategy` moved to rolly core (runtime-agnostic)
+- `_bench` feature on `rolly-tokio` with bench module re-exporting core + exporter internals
+
+### Changed
+- **Breaking:** `rolly` core no longer depends on `tokio`, `reqwest`, or `bytes` — zero runtime dependencies
+- **Breaking:** `Exporter::start()` returns `Result<Self, StartError>` instead of panicking
+- **Breaking:** `try_init_global()` returns `Result<TelemetryGuard, InitError>` (was `TryInitError`)
+- `TelemetryGuard::drop` uses `block_in_place` inside multi-thread runtimes (no more "runtime within runtime" panic)
+- Migrated tokio-dependent benchmarks (`hot_path`, `realistic_scenario`, `generate_flamecharts`) to `rolly-tokio`
+- Migrated tokio-dependent tests (`backpressure`, `sampling_zero_rate`) to `rolly-tokio`
+- E2e tests now use `rolly_tokio::init_global_once()` instead of deprecated `rolly::init()`
+
+### Removed
+- **Breaking:** `rolly::init()` — use `rolly_tokio::init_global_once()` or `rolly::build_layer()`
+- **Breaking:** `rolly::TelemetryGuard` (core version) — use `rolly_tokio::TelemetryGuard`
+- **Breaking:** `rolly::exporter` module — exporter lives in `rolly-tokio` now
+- `tokio`, `reqwest`, `bytes` removed from rolly core dependencies
+- `metrics_aggregation_loop` removed from core
+- `use_metrics::start()` / `poll_loop()` removed from core (use `collect_use_metrics()` + your own scheduler)
+
 ## [0.11.0] - 2026-04-10
 
 ### Added
@@ -113,7 +144,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Async batch exporter with configurable endpoints
 - crates.io packaging and metadata
 
-[Unreleased]: https://github.com/vectorian-rs/rolly/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/vectorian-rs/rolly/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/vectorian-rs/rolly/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/vectorian-rs/rolly/compare/v0.9.0...v0.11.0
 [0.9.0]: https://github.com/vectorian-rs/rolly/compare/v0.5.1...v0.9.0
 [0.5.1]: https://github.com/vectorian-rs/rolly/compare/v0.5.0...v0.5.1

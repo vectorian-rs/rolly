@@ -1565,7 +1565,7 @@ dependencies = [
 
 [[package]]
 name = "rolly"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "blake3",
  "criterion",
@@ -1587,7 +1587,7 @@ dependencies = [
 
 [[package]]
 name = "rolly-tokio"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "bytes",
  "criterion",
