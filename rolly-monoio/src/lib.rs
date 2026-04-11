@@ -29,18 +29,57 @@ pub use exporter::ExporterConfig;
 /// background task will process remaining messages before exiting.
 pub struct TelemetryGuard {
     exporter: Option<exporter::Exporter>,
+    background_shutdown: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Stored so we can do one final metrics collect on shutdown.
+    metrics_flush: Option<MetricsFlushState>,
+}
+
+struct MetricsFlushState {
+    config: MetricsExportConfig,
+    sink: Arc<dyn TelemetrySink>,
 }
 
 impl From<exporter::Exporter> for TelemetryGuard {
     fn from(exporter: exporter::Exporter) -> Self {
         Self {
             exporter: Some(exporter),
+            background_shutdown: None,
+            metrics_flush: None,
+        }
+    }
+}
+
+impl TelemetryGuard {
+    /// Flush pending telemetry and stop background tasks.
+    pub async fn shutdown(mut self) {
+        self.signal_background_shutdown();
+        self.final_metrics_flush();
+        if let Some(exporter) = self.exporter.take() {
+            exporter.shutdown().await;
+        }
+    }
+
+    fn signal_background_shutdown(&self) {
+        if let Some(flag) = &self.background_shutdown {
+            flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// Collect any metrics still in the registry and send them through
+    /// the sink, so the last interval is not lost on shutdown.
+    fn final_metrics_flush(&self) {
+        if let Some(ref mf) = self.metrics_flush {
+            if let Some(data) = rolly::collect_and_encode_metrics(&mf.config) {
+                mf.sink.send_metrics(data);
+            }
         }
     }
 }
 
 impl Drop for TelemetryGuard {
     fn drop(&mut self) {
+        self.signal_background_shutdown();
+        self.final_metrics_flush();
         if let Some(ref exporter) = self.exporter {
             exporter.request_shutdown();
         }
@@ -97,8 +136,10 @@ impl From<tracing_subscriber::util::TryInitError> for InitError {
 ///
 /// # Panics
 ///
-/// Panics if initialization fails for any reason. For fallible
-/// initialization, use [`try_init_global`].
+/// Panics on unexpected initialization errors. If a global tracing
+/// subscriber is already set, logs a warning and returns a no-op guard
+/// instead of panicking. For full control over error handling, use
+/// [`try_init_global`].
 ///
 /// # Requirements
 ///
@@ -106,6 +147,18 @@ impl From<tracing_subscriber::util::TryInitError> for InitError {
 pub fn init_global_once(config: TelemetryConfig) -> TelemetryGuard {
     match try_init_global(config) {
         Ok(guard) => guard,
+        Err(InitError::SubscriberAlreadySet(_)) => {
+            tracing::warn!(
+                "rolly: global tracing subscriber already set, \
+                 skipping telemetry initialization"
+            );
+            TelemetryGuard {
+                exporter: None,
+                background_shutdown: None,
+                metrics_flush: None,
+            }
+        }
+        #[allow(unreachable_patterns)]
         Err(e) => panic!("failed to initialize telemetry: {}", e),
     }
 }
@@ -122,6 +175,7 @@ pub fn try_init_global(config: TelemetryConfig) -> Result<TelemetryGuard, InitEr
     let export_traces = config.otlp_traces_endpoint.is_some();
     let export_logs = config.otlp_logs_endpoint.is_some();
     let export_metrics = config.otlp_metrics_endpoint.is_some();
+    let background_shutdown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     let exporter = if export_traces || export_logs || export_metrics {
         let traces_url = config
@@ -141,6 +195,7 @@ pub fn try_init_global(config: TelemetryConfig) -> Result<TelemetryGuard, InitEr
             logs_url,
             metrics_url,
             backpressure_strategy: config.backpressure_strategy,
+            max_concurrent_exports: 4,
             ..ExporterConfig::default()
         }))
     } else {
@@ -174,8 +229,13 @@ pub fn try_init_global(config: TelemetryConfig) -> Result<TelemetryGuard, InitEr
         "telemetry initialized"
     );
 
+    #[cfg(target_os = "linux")]
+    if let Some(interval) = config.use_metrics_interval {
+        spawn_use_metrics_loop_until_shutdown(interval, background_shutdown.clone());
+    }
+
     // Spawn metrics aggregation loop
-    if export_metrics {
+    let metrics_flush = if export_metrics {
         let flush_interval = config
             .metrics_flush_interval
             .unwrap_or(Duration::from_secs(10));
@@ -191,10 +251,26 @@ pub fn try_init_global(config: TelemetryConfig) -> Result<TelemetryGuard, InitEr
                 .unwrap_or_default()
                 .as_nanos() as u64,
         };
-        spawn_metrics_loop(metrics_config, sink, flush_interval);
-    }
+        let guard_state = MetricsFlushState {
+            config: metrics_config.clone(),
+            sink: sink.clone(),
+        };
+        spawn_metrics_loop_until_shutdown(
+            metrics_config,
+            sink,
+            flush_interval,
+            background_shutdown.clone(),
+        );
+        Some(guard_state)
+    } else {
+        None
+    };
 
-    Ok(TelemetryGuard { exporter })
+    Ok(TelemetryGuard {
+        exporter,
+        background_shutdown: Some(background_shutdown),
+        metrics_flush,
+    })
 }
 
 /// Start the metrics aggregation loop as a background monoio task.
@@ -212,6 +288,44 @@ pub fn spawn_metrics_loop(
             if let Some(data) = rolly::collect_and_encode_metrics(&config) {
                 sink.send_metrics(data);
             }
+            monoio::time::sleep(interval).await;
+        }
+    });
+}
+
+fn spawn_metrics_loop_until_shutdown(
+    config: MetricsExportConfig,
+    sink: Arc<dyn TelemetrySink>,
+    interval: Duration,
+    shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
+    monoio::spawn(async move {
+        monoio::time::sleep(interval).await;
+        loop {
+            if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+                break;
+            }
+            if let Some(data) = rolly::collect_and_encode_metrics(&config) {
+                sink.send_metrics(data);
+            }
+            monoio::time::sleep(interval).await;
+        }
+    });
+}
+
+#[cfg(target_os = "linux")]
+fn spawn_use_metrics_loop_until_shutdown(
+    interval: Duration,
+    shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
+    monoio::spawn(async move {
+        let mut state = UseMetricsState::default();
+        monoio::time::sleep(interval).await;
+        loop {
+            if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+                break;
+            }
+            rolly::collect_use_metrics(&mut state);
             monoio::time::sleep(interval).await;
         }
     });

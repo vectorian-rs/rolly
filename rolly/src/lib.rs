@@ -189,6 +189,7 @@ pub fn build_layer(
 // ── Metrics export ──────────────────────────────────────────────────────
 
 /// Configuration for metrics export encoding.
+#[derive(Clone)]
 pub struct MetricsExportConfig {
     /// Service name, version, environment, plus any custom attributes.
     /// Converted to OTel KeyValue internally.

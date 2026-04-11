@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -11,8 +12,12 @@ pub enum ExportMessage {
     Traces(Bytes),
     Logs(Bytes),
     Metrics(Bytes),
+}
+
+#[derive(Debug)]
+enum ControlMessage {
     Flush(std::sync::mpsc::Sender<()>),
-    Shutdown(std::sync::mpsc::Sender<()>),
+    Shutdown(Option<std::sync::mpsc::Sender<()>>),
 }
 
 /// Configuration for the exporter.
@@ -25,6 +30,10 @@ pub struct ExporterConfig {
     pub channel_capacity: usize,
     pub batch_size: usize,
     pub flush_interval: Duration,
+    pub max_concurrent_exports: usize,
+    /// Maximum number of batches queued for HTTP POST before dropping.
+    /// Bounds memory when the collector is slow or unreachable.
+    pub max_pending_batches: usize,
     pub backpressure_strategy: BackpressureStrategy,
 }
 
@@ -37,6 +46,8 @@ impl Default for ExporterConfig {
             channel_capacity: 1024,
             batch_size: 512,
             flush_interval: Duration::from_secs(1),
+            max_concurrent_exports: 4,
+            max_pending_batches: 32,
             backpressure_strategy: BackpressureStrategy::Drop,
         }
     }
@@ -46,6 +57,7 @@ impl Default for ExporterConfig {
 #[derive(Clone)]
 pub struct Exporter {
     tx: Sender<ExportMessage>,
+    control_tx: Option<Sender<ControlMessage>>,
     backpressure_strategy: BackpressureStrategy,
 }
 
@@ -55,18 +67,27 @@ impl Exporter {
     /// Must be called from within a monoio runtime context.
     pub fn start(config: ExporterConfig) -> Self {
         let (tx, rx) = crossbeam_channel::bounded(config.channel_capacity);
+        let (control_tx, control_rx) = crossbeam_channel::unbounded();
+
+        let batch_config = BatchConfig {
+            traces_url: config.traces_url,
+            logs_url: config.logs_url,
+            metrics_url: config.metrics_url,
+            batch_size: config.batch_size,
+            max_pending_batches: config.max_pending_batches.max(1),
+        };
 
         monoio::spawn(exporter_loop(
             rx,
-            config.traces_url,
-            config.logs_url,
-            config.metrics_url,
-            config.batch_size,
+            control_rx,
+            batch_config,
             config.flush_interval,
+            config.max_concurrent_exports.max(1),
         ));
 
         Self {
             tx,
+            control_tx: Some(control_tx),
             backpressure_strategy: config.backpressure_strategy,
         }
     }
@@ -88,6 +109,7 @@ impl Exporter {
         (
             Self {
                 tx,
+                control_tx: None,
                 backpressure_strategy: strategy,
             },
             rx,
@@ -135,8 +157,11 @@ impl Exporter {
 
     /// Flush all pending data. Polls asynchronously without blocking the event loop.
     pub async fn flush(&self) {
+        let Some(control_tx) = &self.control_tx else {
+            return;
+        };
         let (done_tx, done_rx) = std::sync::mpsc::channel();
-        if self.tx.try_send(ExportMessage::Flush(done_tx)).is_err() {
+        if control_tx.send(ControlMessage::Flush(done_tx)).is_err() {
             return;
         }
         poll_for_ack(done_rx).await;
@@ -146,9 +171,14 @@ impl Exporter {
     ///
     /// Flushes pending batches, then waits for the background task to exit.
     pub async fn shutdown(&self) {
-        self.flush().await;
+        let Some(control_tx) = &self.control_tx else {
+            return;
+        };
         let (done_tx, done_rx) = std::sync::mpsc::channel();
-        if self.tx.try_send(ExportMessage::Shutdown(done_tx)).is_err() {
+        if control_tx
+            .send(ControlMessage::Shutdown(Some(done_tx)))
+            .is_err()
+        {
             return;
         }
         poll_for_ack(done_rx).await;
@@ -158,8 +188,9 @@ impl Exporter {
     ///
     /// Used by `TelemetryGuard::drop` where we cannot await.
     pub fn request_shutdown(&self) {
-        let (done_tx, _) = std::sync::mpsc::channel();
-        let _ = self.tx.try_send(ExportMessage::Shutdown(done_tx));
+        if let Some(control_tx) = &self.control_tx {
+            let _ = control_tx.send(ControlMessage::Shutdown(None));
+        }
     }
 }
 
@@ -202,19 +233,114 @@ const IDLE_CHECK_INTERVAL: Duration = Duration::from_millis(100);
 /// Polling interval when messages are flowing.
 const ACTIVE_CHECK_INTERVAL: Duration = Duration::from_millis(10);
 
-async fn exporter_loop(
-    rx: Receiver<ExportMessage>,
+/// Maximum messages drained from `rx` per iteration before checking `control_rx`.
+const DRAIN_QUOTA: usize = 1024;
+
+/// Immutable config for batch accumulation and queuing.
+struct BatchConfig {
     traces_url: Option<String>,
     logs_url: Option<String>,
     metrics_url: Option<String>,
     batch_size: usize,
-    flush_interval: Duration,
-) {
-    let mut trace_batch: Vec<Bytes> = Vec::new();
-    let mut log_batch: Vec<Bytes> = Vec::new();
-    let mut metrics_batch: Vec<Bytes> = Vec::new();
+    max_pending_batches: usize,
+}
 
-    // Track in-flight HTTP POSTs running on std::threads.
+/// Mutable state for batch accumulation and pending HTTP posts.
+struct BatchState {
+    traces: Vec<Bytes>,
+    logs: Vec<Bytes>,
+    metrics: Vec<Bytes>,
+    pending_posts: VecDeque<PendingPost>,
+}
+
+impl BatchState {
+    fn new() -> Self {
+        Self {
+            traces: Vec::new(),
+            logs: Vec::new(),
+            metrics: Vec::new(),
+            pending_posts: VecDeque::new(),
+        }
+    }
+
+    /// Route a single message into the appropriate batch, flushing to
+    /// the pending queue when the batch reaches `config.batch_size`.
+    fn collect(&mut self, msg: ExportMessage, config: &BatchConfig) {
+        match msg {
+            ExportMessage::Traces(data) => {
+                self.traces.push(data);
+                if self.traces.len() >= config.batch_size {
+                    queue_batch(
+                        &mut self.traces,
+                        config.traces_url.as_deref(),
+                        &mut self.pending_posts,
+                        config.max_pending_batches,
+                    );
+                }
+            }
+            ExportMessage::Logs(data) => {
+                self.logs.push(data);
+                if self.logs.len() >= config.batch_size {
+                    queue_batch(
+                        &mut self.logs,
+                        config.logs_url.as_deref(),
+                        &mut self.pending_posts,
+                        config.max_pending_batches,
+                    );
+                }
+            }
+            ExportMessage::Metrics(data) => {
+                self.metrics.push(data);
+                if self.metrics.len() >= config.batch_size {
+                    queue_batch(
+                        &mut self.metrics,
+                        config.metrics_url.as_deref(),
+                        &mut self.pending_posts,
+                        config.max_pending_batches,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Drain all available messages from `rx` into batches (no quota).
+    fn drain_from(&mut self, rx: &Receiver<ExportMessage>, config: &BatchConfig) {
+        while let Ok(msg) = rx.try_recv() {
+            self.collect(msg, config);
+        }
+    }
+
+    /// Flush all partial batches into the pending queue.
+    fn flush_all(&mut self, config: &BatchConfig) {
+        queue_batch(
+            &mut self.traces,
+            config.traces_url.as_deref(),
+            &mut self.pending_posts,
+            config.max_pending_batches,
+        );
+        queue_batch(
+            &mut self.logs,
+            config.logs_url.as_deref(),
+            &mut self.pending_posts,
+            config.max_pending_batches,
+        );
+        queue_batch(
+            &mut self.metrics,
+            config.metrics_url.as_deref(),
+            &mut self.pending_posts,
+            config.max_pending_batches,
+        );
+    }
+}
+
+async fn exporter_loop(
+    rx: Receiver<ExportMessage>,
+    control_rx: Receiver<ControlMessage>,
+    config: BatchConfig,
+    flush_interval: Duration,
+    max_concurrent_exports: usize,
+) {
+    let mut state = BatchState::new();
     let in_flight = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
     let mut check_interval = IDLE_CHECK_INTERVAL;
@@ -224,94 +350,101 @@ async fn exporter_loop(
         monoio::time::sleep(check_interval).await;
         time_since_flush += check_interval;
 
-        // Drain all available messages (non-blocking).
+        // Drain data channel with a quota so control messages are never starved.
         let mut got_messages = false;
-        loop {
+        let mut disconnected = false;
+        for _ in 0..DRAIN_QUOTA {
             match rx.try_recv() {
-                Ok(ExportMessage::Traces(data)) => {
+                Ok(msg) => {
                     got_messages = true;
-                    trace_batch.push(data);
-                    if trace_batch.len() >= batch_size {
-                        flush_batch(&mut trace_batch, traces_url.as_deref(), &in_flight);
-                    }
-                }
-                Ok(ExportMessage::Logs(data)) => {
-                    got_messages = true;
-                    log_batch.push(data);
-                    if log_batch.len() >= batch_size {
-                        flush_batch(&mut log_batch, logs_url.as_deref(), &in_flight);
-                    }
-                }
-                Ok(ExportMessage::Metrics(data)) => {
-                    got_messages = true;
-                    metrics_batch.push(data);
-                    if metrics_batch.len() >= batch_size {
-                        flush_batch(&mut metrics_batch, metrics_url.as_deref(), &in_flight);
-                    }
-                }
-                Ok(ExportMessage::Flush(done)) => {
-                    flush_batch(&mut trace_batch, traces_url.as_deref(), &in_flight);
-                    flush_batch(&mut log_batch, logs_url.as_deref(), &in_flight);
-                    flush_batch(&mut metrics_batch, metrics_url.as_deref(), &in_flight);
-                    wait_for_in_flight(&in_flight).await;
-                    let _ = done.send(());
-                    time_since_flush = Duration::ZERO;
-                }
-                Ok(ExportMessage::Shutdown(done)) => {
-                    flush_batch(&mut trace_batch, traces_url.as_deref(), &in_flight);
-                    flush_batch(&mut log_batch, logs_url.as_deref(), &in_flight);
-                    flush_batch(&mut metrics_batch, metrics_url.as_deref(), &in_flight);
-                    wait_for_in_flight(&in_flight).await;
-                    let _ = done.send(());
-                    return;
+                    state.collect(msg, &config);
                 }
                 Err(crossbeam_channel::TryRecvError::Empty) => break,
                 Err(crossbeam_channel::TryRecvError::Disconnected) => {
-                    flush_batch(&mut trace_batch, traces_url.as_deref(), &in_flight);
-                    flush_batch(&mut log_batch, logs_url.as_deref(), &in_flight);
-                    flush_batch(&mut metrics_batch, metrics_url.as_deref(), &in_flight);
-                    wait_for_in_flight(&in_flight).await;
+                    disconnected = true;
+                    break;
+                }
+            }
+        }
+
+        // Always check control channel — even under sustained load.
+        while let Ok(control) = control_rx.try_recv() {
+            state.drain_from(&rx, &config);
+            state.flush_all(&config);
+
+            match control {
+                ControlMessage::Flush(done) => {
+                    wait_for_drain(&mut state.pending_posts, &in_flight, max_concurrent_exports)
+                        .await;
+                    let _ = done.send(());
+                    time_since_flush = Duration::ZERO;
+                }
+                ControlMessage::Shutdown(done) => {
+                    wait_for_drain(&mut state.pending_posts, &in_flight, max_concurrent_exports)
+                        .await;
+                    if let Some(done) = done {
+                        let _ = done.send(());
+                    }
                     return;
                 }
             }
         }
 
-        // Adaptive polling: fast when messages flow, slow when idle.
+        if disconnected {
+            state.flush_all(&config);
+            wait_for_drain(&mut state.pending_posts, &in_flight, max_concurrent_exports).await;
+            return;
+        }
+
         check_interval = if got_messages {
             ACTIVE_CHECK_INTERVAL
         } else {
             IDLE_CHECK_INTERVAL
         };
 
-        // Time-based flush
         if time_since_flush >= flush_interval {
             time_since_flush = Duration::ZERO;
-            flush_batch(&mut trace_batch, traces_url.as_deref(), &in_flight);
-            flush_batch(&mut log_batch, logs_url.as_deref(), &in_flight);
-            flush_batch(&mut metrics_batch, metrics_url.as_deref(), &in_flight);
+            state.flush_all(&config);
         }
+
+        spawn_pending_posts(&mut state.pending_posts, &in_flight, max_concurrent_exports);
     }
 }
 
-/// Wait for all in-flight HTTP POSTs to complete without blocking the event loop.
-async fn wait_for_in_flight(in_flight: &std::sync::Arc<std::sync::atomic::AtomicUsize>) {
-    while in_flight.load(std::sync::atomic::Ordering::Acquire) > 0 {
+struct PendingPost {
+    url: String,
+    payload: Vec<u8>,
+}
+
+/// Wait for all queued and in-flight HTTP POSTs to complete without blocking the event loop.
+async fn wait_for_drain(
+    pending_posts: &mut VecDeque<PendingPost>,
+    in_flight: &std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    max_concurrent_exports: usize,
+) {
+    loop {
+        spawn_pending_posts(pending_posts, in_flight, max_concurrent_exports);
+        if pending_posts.is_empty() && in_flight.load(std::sync::atomic::Ordering::Acquire) == 0 {
+            return;
+        }
         monoio::time::sleep(Duration::from_millis(1)).await;
     }
 }
 
-/// Concatenate batch payloads and POST them on a background std::thread.
+/// Concatenate a batch payload and queue it for bounded background POSTing.
+///
+/// If `pending_posts` is at capacity, the oldest batch is dropped and the
+/// global drop counter is incremented. This bounds memory when the collector
+/// is slow or unreachable.
 ///
 /// Protobuf repeated fields merge on concatenation, so multiple
 /// `ExportTraceServiceRequest` payloads concatenated produce a valid
 /// message with multiple `ResourceSpans`.
-///
-/// The HTTP POST runs on a spawned OS thread via `ureq` (blocking I/O
-/// with TLS support). This keeps the monoio event loop responsive.
-fn flush_batch(
+fn queue_batch(
     batch: &mut Vec<Bytes>,
     url: Option<&str>,
-    in_flight: &std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    pending_posts: &mut VecDeque<PendingPost>,
+    max_pending_batches: usize,
 ) {
     if batch.is_empty() {
         return;
@@ -330,12 +463,30 @@ fn flush_batch(
         payload.extend_from_slice(&item);
     }
 
-    in_flight.fetch_add(1, std::sync::atomic::Ordering::Release);
-    let in_flight = in_flight.clone();
-    std::thread::spawn(move || {
-        post_with_retry(&url, &payload);
-        in_flight.fetch_sub(1, std::sync::atomic::Ordering::Release);
-    });
+    while pending_posts.len() >= max_pending_batches {
+        pending_posts.pop_front();
+        rolly::increment_dropped_total();
+    }
+
+    pending_posts.push_back(PendingPost { url, payload });
+}
+
+fn spawn_pending_posts(
+    pending_posts: &mut VecDeque<PendingPost>,
+    in_flight: &std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    max_concurrent_exports: usize,
+) {
+    while in_flight.load(std::sync::atomic::Ordering::Acquire) < max_concurrent_exports {
+        let Some(pending) = pending_posts.pop_front() else {
+            break;
+        };
+        in_flight.fetch_add(1, std::sync::atomic::Ordering::Release);
+        let in_flight = in_flight.clone();
+        std::thread::spawn(move || {
+            post_with_retry(&pending.url, &pending.payload);
+            in_flight.fetch_sub(1, std::sync::atomic::Ordering::Release);
+        });
+    }
 }
 
 /// POST with exponential backoff. On total failure, drop the batch.
@@ -344,11 +495,9 @@ fn flush_batch(
 /// inside the telemetry pipeline. Using tracing here would re-enter the OtlpLayer
 /// and cause infinite recursion.
 ///
-/// **Blocking:** Each POST blocks the thread for the duration of the HTTP
-/// request (including retries with exponential backoff up to ~2.1s total).
-/// The monoio event loop is stalled during this time. For local collectors
-/// (localhost, <10ms latency) this is negligible. For remote endpoints with
-/// higher latency, consider using `rolly-tokio` instead.
+/// **Blocking:** Each POST blocks the worker thread for the duration of the
+/// HTTP request (including retries with exponential backoff up to ~2.1s total).
+/// The monoio event loop remains responsive because this work runs off-thread.
 fn post_with_retry(url: &str, body: &[u8]) {
     for (attempt, delay) in RETRY_DELAYS.iter().enumerate() {
         match ureq::post(url)
@@ -398,6 +547,7 @@ mod tests {
         assert_eq!(config.channel_capacity, 1024);
         assert_eq!(config.batch_size, 512);
         assert_eq!(config.flush_interval, Duration::from_secs(1));
+        assert_eq!(config.max_concurrent_exports, 4);
     }
 
     #[test]
@@ -432,9 +582,12 @@ mod tests {
             channel_capacity: 16,
             batch_size: 100,
             flush_interval: Duration::from_millis(500),
+            max_concurrent_exports: 2,
+            max_pending_batches: 16,
             backpressure_strategy: BackpressureStrategy::Drop,
         };
         assert_eq!(config.batch_size, 100);
         assert_eq!(config.flush_interval, Duration::from_millis(500));
+        assert_eq!(config.max_concurrent_exports, 2);
     }
 }

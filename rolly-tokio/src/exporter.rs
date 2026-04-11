@@ -12,7 +12,7 @@ pub enum ExportMessage {
     Logs(Bytes),
     Metrics(Bytes),
     Flush(tokio::sync::oneshot::Sender<()>),
-    Shutdown,
+    Shutdown(tokio::sync::oneshot::Sender<()>),
 }
 
 /// Configuration for the exporter.
@@ -75,7 +75,7 @@ impl Exporter {
             config.metrics_url,
             config.batch_size,
             config.flush_interval,
-            config.max_concurrent_exports,
+            config.max_concurrent_exports.max(1),
         ));
         Ok(Self {
             tx,
@@ -160,8 +160,12 @@ impl Exporter {
     }
 
     /// Signal the exporter to stop after draining remaining messages.
+    /// Waits for the exporter loop to finish processing before returning.
     pub async fn shutdown(&self) {
-        let _ = self.tx.send(ExportMessage::Shutdown).await;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        if self.tx.send(ExportMessage::Shutdown(tx)).await.is_ok() {
+            let _ = rx.await;
+        }
     }
 }
 
@@ -308,7 +312,33 @@ async fn exporter_loop(
                         while join_set.join_next().await.is_some() {}
                         let _ = done.send(());
                     }
-                    Some(ExportMessage::Shutdown) | None => {
+                    Some(ExportMessage::Shutdown(done)) => {
+                        flush_batch(
+                            &mut trace_batch,
+                            traces_url.as_deref(),
+                            &client,
+                            &semaphore,
+                            &mut join_set,
+                        );
+                        flush_batch(
+                            &mut log_batch,
+                            logs_url.as_deref(),
+                            &client,
+                            &semaphore,
+                            &mut join_set,
+                        );
+                        flush_batch(
+                            &mut metrics_batch,
+                            metrics_url.as_deref(),
+                            &client,
+                            &semaphore,
+                            &mut join_set,
+                        );
+                        while join_set.join_next().await.is_some() {}
+                        let _ = done.send(());
+                        break;
+                    }
+                    None => {
                         flush_batch(
                             &mut trace_batch,
                             traces_url.as_deref(),

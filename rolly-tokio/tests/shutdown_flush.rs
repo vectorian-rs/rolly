@@ -110,3 +110,34 @@ async fn flush_waits_for_in_flight_exports() {
         "flush should have waited for at least one slow request to complete"
     );
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn telemetry_guard_shutdown_drains_on_current_thread_runtime() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let bodies = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    common::spawn_http_server(listener, "200 OK", bodies.clone());
+
+    let (layer, exporter) = common::make_layer_and_exporter(addr);
+    let subscriber = tracing_subscriber::registry().with(layer);
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    for _ in 0..10 {
+        let span = tracing::info_span!("guard-shutdown-span");
+        let _enter = span.enter();
+    }
+
+    rolly_tokio::TelemetryGuard::from(exporter).shutdown().await;
+
+    let received = bodies.lock().await;
+    let all_bytes: Vec<u8> = received.iter().flatten().copied().collect();
+    let count = all_bytes
+        .windows(19)
+        .filter(|w| *w == b"guard-shutdown-span")
+        .count();
+    assert!(
+        count >= 10,
+        "expected at least 10 'guard-shutdown-span' entries, got {}",
+        count
+    );
+}

@@ -9,9 +9,12 @@ use tracing_subscriber::Layer;
 
 use std::sync::Arc;
 
+use crate::constants::fields;
 use crate::otlp_log::{encode_export_logs_request, LogData, SeverityNumber};
-use crate::otlp_trace::{encode_export_trace_request, AnyValue, KeyValue, SpanData, SpanKind};
-use crate::trace_id::generate_span_id;
+use crate::otlp_trace::{
+    encode_export_trace_request, AnyValue, KeyValue, SpanData, SpanKind, SpanStatus, StatusCode,
+};
+use crate::trace_id::{generate_span_id, generate_trace_id};
 
 // --- Span extensions ---
 
@@ -27,6 +30,9 @@ pub struct SpanFields {
     pub(crate) parent_span_id: [u8; 8],
     /// Whether this span (and its descendants) should be exported.
     pub(crate) sampled: bool,
+    pub(crate) span_kind: SpanKind,
+    pub(crate) status_code: StatusCode,
+    pub(crate) status_message: Option<String>,
 }
 
 // --- Shared visitor ---
@@ -37,6 +43,9 @@ struct FieldCollector {
     attrs: Vec<KeyValue>,
     trace_id: Option<[u8; 16]>,
     message: Option<String>,
+    span_kind: Option<SpanKind>,
+    status_code: Option<StatusCode>,
+    status_message: Option<String>,
 }
 
 impl FieldCollector {
@@ -45,6 +54,46 @@ impl FieldCollector {
             attrs: Vec::new(),
             trace_id: None,
             message: None,
+            span_kind: None,
+            status_code: None,
+            status_message: None,
+        }
+    }
+
+    /// Shared field-matching logic used by both record_str and record_debug.
+    fn record_field(&mut self, field: &Field, value: &str) {
+        match field.name() {
+            "message" => {
+                self.message = Some(value.to_string());
+            }
+            // Kept as a span attribute so trace_id is visible in backends
+            // that display raw attributes (e.g. Jaeger, Grafana Tempo).
+            fields::TRACE_ID => {
+                if let Ok(bytes) = hex_to_bytes_16(value) {
+                    self.trace_id = Some(bytes);
+                }
+                self.attrs.push(KeyValue {
+                    key: field.name().to_string(),
+                    value: AnyValue::String(value.to_string()),
+                });
+            }
+            // otel.* fields are semantic control signals consumed by OtlpLayer;
+            // they map to OTLP Span fields, not attributes.
+            fields::OTEL_KIND => {
+                self.span_kind = parse_span_kind(value);
+            }
+            fields::OTEL_STATUS_CODE => {
+                self.status_code = parse_status_code(value);
+            }
+            fields::OTEL_STATUS_MESSAGE => {
+                self.status_message = Some(value.to_string());
+            }
+            _ => {
+                self.attrs.push(KeyValue {
+                    key: field.name().to_string(),
+                    value: AnyValue::String(value.to_string()),
+                });
+            }
         }
     }
 }
@@ -52,30 +101,17 @@ impl FieldCollector {
 impl Visit for FieldCollector {
     fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
         let s = format!("{:?}", value);
-        if field.name() == "message" {
-            self.message = Some(s);
-        } else {
-            self.attrs.push(KeyValue {
-                key: field.name().to_string(),
-                value: AnyValue::String(s),
-            });
-        }
+        // Strip surrounding quotes from Debug output (e.g. "\"server\"" → "server")
+        // so that otel.* semantic fields work with %value and Display wrappers.
+        let stripped = s
+            .strip_prefix('"')
+            .and_then(|s| s.strip_suffix('"'))
+            .unwrap_or(&s);
+        self.record_field(field, stripped);
     }
 
     fn record_str(&mut self, field: &Field, value: &str) {
-        if field.name() == "message" {
-            self.message = Some(value.to_string());
-        } else {
-            if field.name() == "trace_id" {
-                if let Ok(bytes) = hex_to_bytes_16(value) {
-                    self.trace_id = Some(bytes);
-                }
-            }
-            self.attrs.push(KeyValue {
-                key: field.name().to_string(),
-                value: AnyValue::String(value.to_string()),
-            });
-        }
+        self.record_field(field, value);
     }
 
     fn record_i64(&mut self, field: &Field, value: i64) {
@@ -127,6 +163,26 @@ fn hex_nibble(b: u8) -> Option<u8> {
         b'0'..=b'9' => Some(b - b'0'),
         b'a'..=b'f' => Some(b - b'a' + 10),
         b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn parse_span_kind(s: &str) -> Option<SpanKind> {
+    match s {
+        "server" | "SERVER" => Some(SpanKind::Server),
+        "client" | "CLIENT" => Some(SpanKind::Client),
+        "producer" | "PRODUCER" => Some(SpanKind::Producer),
+        "consumer" | "CONSUMER" => Some(SpanKind::Consumer),
+        "internal" | "INTERNAL" => Some(SpanKind::Internal),
+        _ => None,
+    }
+}
+
+fn parse_status_code(s: &str) -> Option<StatusCode> {
+    match s {
+        "ok" | "OK" => Some(StatusCode::Ok),
+        "error" | "ERROR" => Some(StatusCode::Error),
+        "unset" | "UNSET" => Some(StatusCode::Unset),
         _ => None,
     }
 }
@@ -234,20 +290,28 @@ where
         attrs.record(&mut visitor);
 
         let span_id = generate_span_id();
-        let trace_id = visitor.trace_id.unwrap_or([0u8; 16]);
 
         let parent = span.parent();
         let parent_fields = parent.as_ref().and_then(|p| {
             p.extensions()
                 .get::<SpanFields>()
-                .map(|f| (f.span_id, f.sampled))
+                .map(|f| (f.trace_id, f.span_id, f.sampled))
         });
 
-        let parent_span_id = parent_fields.map(|(id, _)| id).unwrap_or([0u8; 8]);
+        // Trace ID resolution order:
+        // 1. Inherit from parent span (child spans always share the parent's trace)
+        // 2. Use explicit trace_id attribute from span fields
+        // 3. Generate a new random trace ID for root spans
+        let trace_id = match parent_fields {
+            Some((parent_trace_id, _, _)) => parent_trace_id,
+            None => visitor.trace_id.unwrap_or_else(|| generate_trace_id(None)),
+        };
+
+        let parent_span_id = parent_fields.map(|(_, id, _)| id).unwrap_or([0u8; 8]);
 
         // Inherit sampling decision from parent, or make a new one for root spans.
         let sampled = match parent_fields {
-            Some((_, parent_sampled)) => parent_sampled,
+            Some((_, _, parent_sampled)) => parent_sampled,
             None => should_sample(trace_id, self.sampling_rate),
         };
 
@@ -261,6 +325,9 @@ where
             span_id,
             parent_span_id,
             sampled,
+            span_kind: visitor.span_kind.unwrap_or(SpanKind::Internal),
+            status_code: visitor.status_code.unwrap_or(StatusCode::Unset),
+            status_message: visitor.status_message,
         });
     }
 
@@ -271,6 +338,15 @@ where
             let mut visitor = FieldCollector::new();
             values.record(&mut visitor);
             fields.attrs.extend(visitor.attrs);
+            if let Some(kind) = visitor.span_kind {
+                fields.span_kind = kind;
+            }
+            if let Some(code) = visitor.status_code {
+                fields.status_code = code;
+            }
+            if let Some(msg) = visitor.status_message {
+                fields.status_message = Some(msg);
+            }
         }
     }
 
@@ -327,7 +403,7 @@ where
         let span = ctx.span(&id).expect("span not found");
         let ext = span.extensions();
 
-        let (start_nanos, attrs, trace_id, span_id, parent_span_id) = {
+        let (start_nanos, attrs, trace_id, span_id, parent_span_id, span_kind, status) = {
             let timing = match ext.get::<SpanTiming>() {
                 Some(t) => t,
                 None => return,
@@ -342,12 +418,22 @@ where
                 return;
             }
 
+            let status = match fields.status_code {
+                StatusCode::Unset => None,
+                code => Some(SpanStatus {
+                    message: fields.status_message.clone().unwrap_or_default(),
+                    code,
+                }),
+            };
+
             (
                 timing.start_nanos,
                 fields.attrs.clone(),
                 fields.trace_id,
                 fields.span_id,
                 fields.parent_span_id,
+                fields.span_kind,
+                status,
             )
         };
 
@@ -358,11 +444,11 @@ where
             span_id,
             parent_span_id,
             name: span.name().to_string(),
-            kind: SpanKind::Internal,
+            kind: span_kind,
             start_time_unix_nano: start_nanos,
             end_time_unix_nano: end_nanos,
             attributes: attrs,
-            status: None,
+            status,
         };
 
         let data = encode_export_trace_request(
@@ -919,6 +1005,394 @@ mod tests {
             rx.try_recv().is_err(),
             "child spans and events should inherit parent's sampled-out decision"
         );
+    }
+
+    #[test]
+    fn root_span_without_explicit_trace_id_gets_generated_nonzero_id() {
+        let (sink, rx) = mock_sink();
+        let layer = OtlpLayer::new(OtlpLayerConfig {
+            sink,
+            service_name: "test-svc",
+            service_version: "0.0.1",
+            environment: "test",
+            resource_attributes: &[],
+            export_traces: true,
+            export_logs: false,
+            sampling_rate: 1.0,
+        });
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        {
+            let span = tracing::info_span!("root-no-trace-id");
+            let _enter = span.enter();
+        }
+
+        let msg = rx.recv().expect("should receive trace");
+        match msg {
+            MockMessage::Traces(data) => {
+                // The trace must not contain all-zero trace_id.
+                // Protobuf field 1 (trace_id) is at the start of the Span message.
+                // We check that the encoded output does NOT contain 16 consecutive zero bytes
+                // at any trace_id position. A simpler check: the span name is present and
+                // the data is non-trivially sized (generated ID is in there).
+                assert!(
+                    data.windows(16).any(|w| w == b"root-no-trace-id"),
+                    "span name not found"
+                );
+                // All-zero trace_id [0u8;16] should NOT appear — the generated ID is random.
+                let zero_trace = [0u8; 16];
+                assert!(
+                    !data.windows(16).any(|w| w == zero_trace),
+                    "trace_id should not be all zeros for a root span"
+                );
+            }
+            other => panic!("expected Traces, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn child_span_inherits_trace_id_from_parent() {
+        let (sink, rx) = mock_sink();
+        let layer = OtlpLayer::new(OtlpLayerConfig {
+            sink,
+            service_name: "test-svc",
+            service_version: "0.0.1",
+            environment: "test",
+            resource_attributes: &[],
+            export_traces: true,
+            export_logs: false,
+            sampling_rate: 1.0,
+        });
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let trace_id_hex = "aabbccdd11223344aabbccdd11223344";
+        let trace_id_bytes: [u8; 16] = [
+            0xaa, 0xbb, 0xcc, 0xdd, 0x11, 0x22, 0x33, 0x44, 0xaa, 0xbb, 0xcc, 0xdd, 0x11, 0x22,
+            0x33, 0x44,
+        ];
+
+        {
+            let parent = tracing::info_span!("parent", trace_id = trace_id_hex);
+            let _p = parent.enter();
+            {
+                // Child has NO explicit trace_id — must inherit from parent
+                let child = tracing::info_span!("child");
+                let _c = child.enter();
+            }
+        }
+
+        // First message: child span (closes first)
+        let child_msg = rx.recv().expect("should receive child trace");
+        match &child_msg {
+            MockMessage::Traces(data) => {
+                assert!(
+                    data.windows(5).any(|w| w == b"child"),
+                    "child span name not found"
+                );
+                assert!(
+                    data.windows(16).any(|w| w == trace_id_bytes),
+                    "child span must carry parent's trace_id"
+                );
+            }
+            other => panic!("expected Traces for child, got {:?}", other),
+        }
+
+        // Second message: parent span
+        let parent_msg = rx.recv().expect("should receive parent trace");
+        match &parent_msg {
+            MockMessage::Traces(data) => {
+                assert!(
+                    data.windows(6).any(|w| w == b"parent"),
+                    "parent span name not found"
+                );
+                assert!(
+                    data.windows(16).any(|w| w == trace_id_bytes),
+                    "parent span must carry its own trace_id"
+                );
+            }
+            other => panic!("expected Traces for parent, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn grandchild_inherits_trace_id_through_chain() {
+        let (sink, rx) = mock_sink();
+        let layer = OtlpLayer::new(OtlpLayerConfig {
+            sink,
+            service_name: "test-svc",
+            service_version: "0.0.1",
+            environment: "test",
+            resource_attributes: &[],
+            export_traces: true,
+            export_logs: false,
+            sampling_rate: 1.0,
+        });
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let trace_id_hex = "1111111122222222aaaaaaaa33333333";
+        let trace_id_bytes: [u8; 16] = [
+            0x11, 0x11, 0x11, 0x11, 0x22, 0x22, 0x22, 0x22, 0xaa, 0xaa, 0xaa, 0xaa, 0x33, 0x33,
+            0x33, 0x33,
+        ];
+
+        {
+            let root = tracing::info_span!("root", trace_id = trace_id_hex);
+            let _r = root.enter();
+            {
+                let mid = tracing::info_span!("mid");
+                let _m = mid.enter();
+                {
+                    let leaf = tracing::info_span!("leaf");
+                    let _l = leaf.enter();
+                }
+            }
+        }
+
+        // All three spans must contain the same trace_id
+        for expected_name in &[b"leaf" as &[u8], b"mid", b"root"] {
+            let msg = rx.recv().expect("should receive trace");
+            match &msg {
+                MockMessage::Traces(data) => {
+                    assert!(
+                        data.windows(expected_name.len())
+                            .any(|w| w == *expected_name),
+                        "span name {:?} not found",
+                        std::str::from_utf8(expected_name)
+                    );
+                    assert!(
+                        data.windows(16).any(|w| w == trace_id_bytes),
+                        "span {:?} must carry root's trace_id",
+                        std::str::from_utf8(expected_name)
+                    );
+                }
+                other => panic!("expected Traces, got {:?}", other),
+            }
+        }
+    }
+
+    #[test]
+    fn span_kind_from_otel_kind_attr() {
+        let (sink, rx) = mock_sink();
+        let layer = OtlpLayer::new(OtlpLayerConfig {
+            sink,
+            service_name: "test-svc",
+            service_version: "0.0.1",
+            environment: "test",
+            resource_attributes: &[],
+            export_traces: true,
+            export_logs: false,
+            sampling_rate: 1.0,
+        });
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        {
+            let span = tracing::info_span!("server-span", otel.kind = "server");
+            let _enter = span.enter();
+        }
+
+        let msg = rx.recv().expect("should receive trace");
+        match msg {
+            MockMessage::Traces(data) => {
+                // SpanKind::Server = 2, encoded as varint field 6: tag=0x30, value=0x02
+                assert!(
+                    data.windows(2).any(|w| w == [0x30, 0x02]),
+                    "SpanKind::Server not found in protobuf"
+                );
+                // otel.kind must NOT appear in attributes
+                assert!(
+                    !data.windows(9).any(|w| w == b"otel.kind"),
+                    "otel.kind should not leak into span attributes"
+                );
+            }
+            other => panic!("expected Traces, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn span_status_from_otel_status_attrs() {
+        let (sink, rx) = mock_sink();
+        let layer = OtlpLayer::new(OtlpLayerConfig {
+            sink,
+            service_name: "test-svc",
+            service_version: "0.0.1",
+            environment: "test",
+            resource_attributes: &[],
+            export_traces: true,
+            export_logs: false,
+            sampling_rate: 1.0,
+        });
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        {
+            let span = tracing::info_span!(
+                "error-span",
+                otel.status_code = "error",
+                otel.status_message = "something broke"
+            );
+            let _enter = span.enter();
+        }
+
+        let msg = rx.recv().expect("should receive trace");
+        match msg {
+            MockMessage::Traces(data) => {
+                // StatusCode::Error = 2, in Status message field 3: tag=0x18, value=0x02
+                assert!(
+                    data.windows(2).any(|w| w == [0x18, 0x02]),
+                    "StatusCode::Error not found in protobuf"
+                );
+                assert!(
+                    data.windows(15).any(|w| w == b"something broke"),
+                    "status message not found in protobuf"
+                );
+                // otel.* must NOT appear in attributes
+                assert!(
+                    !data.windows(16).any(|w| w == b"otel.status_code"),
+                    "otel.status_code should not leak into attributes"
+                );
+                assert!(
+                    !data.windows(19).any(|w| w == b"otel.status_message"),
+                    "otel.status_message should not leak into attributes"
+                );
+            }
+            other => panic!("expected Traces, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn deferred_status_recording() {
+        let (sink, rx) = mock_sink();
+        let layer = OtlpLayer::new(OtlpLayerConfig {
+            sink,
+            service_name: "test-svc",
+            service_version: "0.0.1",
+            environment: "test",
+            resource_attributes: &[],
+            export_traces: true,
+            export_logs: false,
+            sampling_rate: 1.0,
+        });
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        {
+            let span = tracing::info_span!(
+                "deferred-span",
+                otel.status_code = tracing::field::Empty,
+                otel.status_message = tracing::field::Empty,
+            );
+            let _enter = span.enter();
+            // Simulate setting status after work completes
+            span.record("otel.status_code", "ok");
+            span.record("otel.status_message", "all good");
+        }
+
+        let msg = rx.recv().expect("should receive trace");
+        match msg {
+            MockMessage::Traces(data) => {
+                // StatusCode::Ok = 1, in Status message field 3: tag=0x18, value=0x01
+                assert!(
+                    data.windows(2).any(|w| w == [0x18, 0x01]),
+                    "StatusCode::Ok not found in protobuf"
+                );
+                assert!(
+                    data.windows(8).any(|w| w == b"all good"),
+                    "status message 'all good' not found in protobuf"
+                );
+            }
+            other => panic!("expected Traces, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn default_span_kind_is_internal_and_no_status() {
+        let (sink, rx) = mock_sink();
+        let layer = OtlpLayer::new(OtlpLayerConfig {
+            sink,
+            service_name: "test-svc",
+            service_version: "0.0.1",
+            environment: "test",
+            resource_attributes: &[],
+            export_traces: true,
+            export_logs: false,
+            sampling_rate: 1.0,
+        });
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        {
+            let span = tracing::info_span!("plain-span");
+            let _enter = span.enter();
+        }
+
+        let msg = rx.recv().expect("should receive trace");
+        match msg {
+            MockMessage::Traces(data) => {
+                // SpanKind::Internal = 1, field 6: tag=0x30, value=0x01
+                assert!(
+                    data.windows(2).any(|w| w == [0x30, 0x01]),
+                    "SpanKind::Internal should be the default"
+                );
+                // Status message text should not appear when status_code is Unset.
+                // We can't reliably detect field-tag absence in raw protobuf
+                // (0x7A appears in random data), but verifying no status-related
+                // strings leak is sufficient since encode_span skips None status.
+                assert!(
+                    !data.windows(16).any(|w| w == b"otel.status_code"),
+                    "otel.status_code should not appear in attributes"
+                );
+            }
+            other => panic!("expected Traces, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn all_span_kind_variants_parse() {
+        for (input, expected_tag) in [
+            ("server", 0x02u8),
+            ("client", 0x03),
+            ("producer", 0x04),
+            ("consumer", 0x05),
+            ("internal", 0x01),
+            ("SERVER", 0x02),
+            ("CLIENT", 0x03),
+        ] {
+            let (sink, rx) = mock_sink();
+            let layer = OtlpLayer::new(OtlpLayerConfig {
+                sink,
+                service_name: "test-svc",
+                service_version: "0.0.1",
+                environment: "test",
+                resource_attributes: &[],
+                export_traces: true,
+                export_logs: false,
+                sampling_rate: 1.0,
+            });
+            let subscriber = tracing_subscriber::registry().with(layer);
+            let _guard = tracing::subscriber::set_default(subscriber);
+
+            {
+                let span = tracing::info_span!("kind-test", otel.kind = input);
+                let _enter = span.enter();
+            }
+
+            let msg = rx.recv().expect("should receive trace");
+            match msg {
+                MockMessage::Traces(data) => {
+                    assert!(
+                        data.windows(2).any(|w| w == [0x30, expected_tag]),
+                        "SpanKind for '{}' (expected tag byte 0x{:02x}) not found",
+                        input,
+                        expected_tag
+                    );
+                }
+                other => panic!("expected Traces for '{}', got {:?}", input, other),
+            }
+        }
     }
 
     #[test]

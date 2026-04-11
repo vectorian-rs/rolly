@@ -14,10 +14,20 @@ pub use exporter::StartError;
 /// Guard that flushes pending telemetry on drop.
 ///
 /// Hold this in your main function to ensure all spans are exported
-/// before shutdown. Created by [`init_global_once`] or manually.
+/// before shutdown. On a `current_thread` tokio runtime, `Drop` can
+/// only trigger a best-effort async drain; call [`TelemetryGuard::shutdown`]
+/// when you need deterministic delivery. Created by [`init_global_once`]
+/// or manually.
 pub struct TelemetryGuard {
     exporter: Option<exporter::Exporter>,
     task_handles: Vec<tokio::task::JoinHandle<()>>,
+    /// Stored so we can do one final metrics collect on shutdown.
+    metrics_flush: Option<MetricsFlushState>,
+}
+
+struct MetricsFlushState {
+    config: MetricsExportConfig,
+    sink: Arc<dyn TelemetrySink>,
 }
 
 impl From<exporter::Exporter> for TelemetryGuard {
@@ -25,15 +35,46 @@ impl From<exporter::Exporter> for TelemetryGuard {
         Self {
             exporter: Some(exporter),
             task_handles: Vec::new(),
+            metrics_flush: None,
+        }
+    }
+}
+
+impl TelemetryGuard {
+    /// Flush pending telemetry and stop background tasks.
+    ///
+    /// Prefer this over relying on `Drop` when running on a
+    /// `current_thread` tokio runtime and you need a deterministic drain.
+    pub async fn shutdown(mut self) {
+        self.abort_tasks();
+        self.final_metrics_flush();
+        if let Some(exporter) = self.exporter.take() {
+            exporter.flush().await;
+            exporter.shutdown().await;
+        }
+    }
+
+    fn abort_tasks(&mut self) {
+        for handle in self.task_handles.drain(..) {
+            handle.abort();
+        }
+    }
+
+    /// Collect any metrics still in the registry and send them through
+    /// the sink, so the last interval is not lost on shutdown.
+    fn final_metrics_flush(&self) {
+        if let Some(ref mf) = self.metrics_flush {
+            if let Some(data) = rolly::collect_and_encode_metrics(&mf.config) {
+                mf.sink.send_metrics(data);
+            }
         }
     }
 }
 
 impl Drop for TelemetryGuard {
     fn drop(&mut self) {
-        for handle in &self.task_handles {
-            handle.abort();
-        }
+        self.abort_tasks();
+        self.final_metrics_flush();
         if let Some(ref exporter) = self.exporter {
             let flush_shutdown = async {
                 exporter.flush().await;
@@ -141,6 +182,17 @@ impl From<StartError> for InitError {
 pub fn init_global_once(config: TelemetryConfig) -> TelemetryGuard {
     match try_init_global(config) {
         Ok(guard) => guard,
+        Err(InitError::SubscriberAlreadySet(_)) => {
+            tracing::warn!(
+                "rolly: global tracing subscriber already set, \
+                 skipping telemetry initialization"
+            );
+            TelemetryGuard {
+                exporter: None,
+                task_handles: Vec::new(),
+                metrics_flush: None,
+            }
+        }
         Err(e) => panic!("failed to initialize telemetry: {}", e),
     }
 }
@@ -230,7 +282,7 @@ pub fn try_init_global(config: TelemetryConfig) -> Result<TelemetryGuard, InitEr
     }
 
     // Spawn metrics aggregation loop
-    if export_metrics {
+    let metrics_flush = if export_metrics {
         let flush_interval = config
             .metrics_flush_interval
             .unwrap_or(Duration::from_secs(10));
@@ -246,13 +298,21 @@ pub fn try_init_global(config: TelemetryConfig) -> Result<TelemetryGuard, InitEr
                 .unwrap_or_default()
                 .as_nanos() as u64,
         };
+        let guard_state = MetricsFlushState {
+            config: metrics_config.clone(),
+            sink: sink.clone(),
+        };
         let handle = spawn_metrics_loop(metrics_config, sink, flush_interval);
         task_handles.push(handle);
-    }
+        Some(guard_state)
+    } else {
+        None
+    };
 
     Ok(TelemetryGuard {
         exporter,
         task_handles,
+        metrics_flush,
     })
 }
 

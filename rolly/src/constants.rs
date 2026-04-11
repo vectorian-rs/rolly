@@ -11,6 +11,9 @@ pub mod fields {
     pub const HTTP_STATUS_CODE: &str = "http.status_code";
     pub const HTTP_LATENCY_MS: &str = "http.latency_ms";
     pub const CF_REQUEST_ID: &str = "cf.request_id";
+    pub const OTEL_KIND: &str = "otel.kind";
+    pub const OTEL_STATUS_CODE: &str = "otel.status_code";
+    pub const OTEL_STATUS_MESSAGE: &str = "otel.status_message";
 }
 
 /// Metric event name constants.
@@ -37,6 +40,9 @@ mod tests {
         assert!(!fields::HTTP_STATUS_CODE.is_empty());
         assert!(!fields::HTTP_LATENCY_MS.is_empty());
         assert!(!fields::CF_REQUEST_ID.is_empty());
+        assert!(!fields::OTEL_KIND.is_empty());
+        assert!(!fields::OTEL_STATUS_CODE.is_empty());
+        assert!(!fields::OTEL_STATUS_MESSAGE.is_empty());
     }
 
     #[test]

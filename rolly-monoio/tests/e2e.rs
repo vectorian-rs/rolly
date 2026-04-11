@@ -58,6 +58,8 @@ async fn exporter_queues_and_flushes_without_panic() {
         channel_capacity: 16,
         batch_size: 512,
         flush_interval: Duration::from_secs(60),
+        max_concurrent_exports: 4,
+        max_pending_batches: 32,
         backpressure_strategy: rolly::BackpressureStrategy::Drop,
     };
     let exporter = rolly_monoio::MonoioExporter::start(config);
@@ -77,6 +79,8 @@ async fn exporter_flush_completes() {
         channel_capacity: 16,
         batch_size: 512,
         flush_interval: Duration::from_secs(60),
+        max_concurrent_exports: 4,
+        max_pending_batches: 32,
         backpressure_strategy: rolly::BackpressureStrategy::Drop,
     };
     let exporter = rolly_monoio::MonoioExporter::start(config);
@@ -113,6 +117,8 @@ async fn exporter_sends_traces_to_server() {
         channel_capacity: 16,
         batch_size: 512,
         flush_interval: Duration::from_secs(60),
+        max_concurrent_exports: 4,
+        max_pending_batches: 32,
         backpressure_strategy: rolly::BackpressureStrategy::Drop,
     };
     let exporter = rolly_monoio::MonoioExporter::start(config);
@@ -123,6 +129,54 @@ async fn exporter_sends_traces_to_server() {
 
     let received = body_rx.recv_timeout(Duration::from_secs(5));
     assert!(received.is_ok(), "should have received HTTP body");
+    assert_eq!(received.unwrap(), payload);
+
+    exporter.shutdown().await;
+}
+
+#[monoio::test(enable_timer = true)]
+async fn flush_completes_when_data_channel_is_full() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let (body_tx, body_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+
+    monoio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let body_tx = body_tx.clone();
+            monoio::spawn(async move {
+                let body = handle_http_request(stream).await;
+                if !body.is_empty() {
+                    let _ = body_tx.send(body);
+                }
+            });
+        }
+    });
+
+    monoio::time::sleep(Duration::from_millis(50)).await;
+
+    let config = rolly_monoio::ExporterConfig {
+        traces_url: Some(format!("http://{}/v1/traces", addr)),
+        logs_url: None,
+        metrics_url: None,
+        channel_capacity: 1,
+        batch_size: 512,
+        flush_interval: Duration::from_secs(60),
+        max_concurrent_exports: 4,
+        max_pending_batches: 32,
+        backpressure_strategy: rolly::BackpressureStrategy::Drop,
+    };
+    let exporter = rolly_monoio::MonoioExporter::start(config);
+
+    let payload = vec![0x0A, 0x02, 0x08, 0x01];
+    exporter.send_traces(payload.clone());
+    exporter.flush().await;
+
+    let received = body_rx.recv_timeout(Duration::from_secs(5));
+    assert!(
+        received.is_ok(),
+        "flush should drain even when the data queue is full"
+    );
     assert_eq!(received.unwrap(), payload);
 
     exporter.shutdown().await;
@@ -156,6 +210,8 @@ async fn exporter_batches_multiple_messages() {
         channel_capacity: 16,
         batch_size: 3,
         flush_interval: Duration::from_secs(60),
+        max_concurrent_exports: 4,
+        max_pending_batches: 32,
         backpressure_strategy: rolly::BackpressureStrategy::Drop,
     };
     let exporter = rolly_monoio::MonoioExporter::start(config);
@@ -199,6 +255,8 @@ async fn exporter_handles_traces_and_logs() {
         channel_capacity: 16,
         batch_size: 512,
         flush_interval: Duration::from_secs(60),
+        max_concurrent_exports: 4,
+        max_pending_batches: 32,
         backpressure_strategy: rolly::BackpressureStrategy::Drop,
     };
     let exporter = rolly_monoio::MonoioExporter::start(config);
@@ -255,6 +313,8 @@ async fn exporter_skips_logs_when_no_logs_url() {
         channel_capacity: 16,
         batch_size: 512,
         flush_interval: Duration::from_secs(60),
+        max_concurrent_exports: 4,
+        max_pending_batches: 32,
         backpressure_strategy: rolly::BackpressureStrategy::Drop,
     };
     let exporter = rolly_monoio::MonoioExporter::start(config);
