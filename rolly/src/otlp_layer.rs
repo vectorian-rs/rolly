@@ -29,6 +29,7 @@ struct SpanTiming {
 /// Events collected during a span's lifetime, exported in the OTLP events array.
 struct SpanEvents {
     events: Vec<SpanEvent>,
+    dropped: u32,
 }
 
 /// Span context stored in tracing extensions. Public so PropagationLayer can read it.
@@ -132,7 +133,7 @@ impl Visit for FieldCollector {
     fn record_u64(&mut self, field: &Field, value: u64) {
         self.attrs.push(KeyValue {
             key: field.name().to_string(),
-            value: AnyValue::Int(value as i64),
+            value: AnyValue::Int(value.min(i64::MAX as u64) as i64),
         });
     }
 
@@ -341,7 +342,10 @@ where
             status_code: visitor.status_code.unwrap_or(StatusCode::Unset),
             status_message: visitor.status_message,
         });
-        ext.insert(SpanEvents { events: Vec::new() });
+        ext.insert(SpanEvents {
+            events: Vec::new(),
+            dropped: 0,
+        });
     }
 
     fn on_record(&self, id: &Id, values: &Record<'_>, ctx: Context<'_, S>) {
@@ -419,6 +423,8 @@ where
                             name: event_name.clone(),
                             attributes: attrs,
                         });
+                    } else {
+                        span_events.dropped += 1;
                     }
                 }
             }
@@ -454,7 +460,17 @@ where
         let span = ctx.span(&id).expect("span not found");
         let ext = span.extensions();
 
-        let (start_nanos, attrs, trace_id, span_id, parent_span_id, span_kind, status, events) = {
+        let (
+            start_nanos,
+            attrs,
+            trace_id,
+            span_id,
+            parent_span_id,
+            span_kind,
+            status,
+            events,
+            dropped_events_count,
+        ) = {
             let timing = match ext.get::<SpanTiming>() {
                 Some(t) => t,
                 None => return,
@@ -476,9 +492,9 @@ where
                 }),
             };
 
-            let events = ext
+            let (events, dropped_events_count) = ext
                 .get::<SpanEvents>()
-                .map(|e| e.events.clone())
+                .map(|e| (e.events.clone(), e.dropped))
                 .unwrap_or_default();
 
             (
@@ -490,6 +506,7 @@ where
                 fields.span_kind,
                 status,
                 events,
+                dropped_events_count,
             )
         };
 
@@ -505,6 +522,7 @@ where
             end_time_unix_nano: end_nanos,
             attributes: attrs,
             events,
+            dropped_events_count,
             status,
         };
 

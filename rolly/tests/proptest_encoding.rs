@@ -220,6 +220,7 @@ fn arb_span_data() -> impl Strategy<Value = SpanData> {
                     end_time_unix_nano: end,
                     attributes,
                     events: vec![],
+                    dropped_events_count: 0,
                     status,
                 }
             },

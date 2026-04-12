@@ -48,8 +48,12 @@ fn encode_log_record(buf: &mut Vec<u8>, log: &LogData) {
         });
     }
 
-    encode_bytes_field(buf, 9, &log.trace_id);
-    encode_bytes_field(buf, 10, &log.span_id);
+    if log.trace_id != [0u8; 16] {
+        encode_bytes_field(buf, 9, &log.trace_id);
+    }
+    if log.span_id != [0u8; 8] {
+        encode_bytes_field(buf, 10, &log.span_id);
+    }
 }
 
 /// Encode a full ExportLogsServiceRequest.

@@ -18,6 +18,7 @@ pub enum ExportMessage {
 /// Configuration for the exporter.
 ///
 /// Use `Default` for standard values (1024 channel, 512 batch, 1s flush, 4 concurrent).
+#[derive(Debug, Clone)]
 pub struct ExporterConfig {
     pub traces_url: Option<String>,
     pub logs_url: Option<String>,
@@ -232,6 +233,27 @@ impl BatchState {
         }
     }
 
+    fn batches_empty(&self) -> bool {
+        self.traces.is_empty() && self.logs.is_empty() && self.metrics.is_empty()
+    }
+
+    /// Flush all batches and drain in-flight tasks, retrying until
+    /// all local buffers are empty (handles semaphore contention).
+    async fn flush_and_drain(
+        &mut self,
+        config: &BatchConfig,
+        client: &reqwest::Client,
+        semaphore: &std::sync::Arc<tokio::sync::Semaphore>,
+    ) {
+        loop {
+            self.flush_all(config, client, semaphore);
+            self.drain().await;
+            if self.batches_empty() {
+                break;
+            }
+        }
+    }
+
     /// Route a single message into the appropriate batch, flushing when
     /// the batch reaches `config.batch_size`.
     fn collect(
@@ -346,13 +368,11 @@ async fn exporter_loop(
             msg = rx.recv() => {
                 match msg {
                     Some(ExportMessage::Flush(done)) => {
-                        state.flush_all(&config, &client, &semaphore);
-                        state.drain().await;
+                        state.flush_and_drain(&config, &client, &semaphore).await;
                         let _ = done.send(());
                     }
                     Some(ExportMessage::Shutdown(done)) => {
-                        state.flush_all(&config, &client, &semaphore);
-                        state.drain().await;
+                        state.flush_and_drain(&config, &client, &semaphore).await;
                         let _ = done.send(());
                         break;
                     }
@@ -360,8 +380,7 @@ async fn exporter_loop(
                         state.collect(msg, &config, &client, &semaphore);
                     }
                     None => {
-                        state.flush_all(&config, &client, &semaphore);
-                        state.drain().await;
+                        state.flush_and_drain(&config, &client, &semaphore).await;
                         break;
                     }
                 }

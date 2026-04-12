@@ -71,6 +71,7 @@ fn trace_request_decodes_via_prost() {
             },
         ],
         events: vec![],
+        dropped_events_count: 0,
         status: Some(SpanStatus {
             message: "all good".into(),
             code: StatusCode::Ok,
@@ -180,6 +181,7 @@ fn trace_empty_attributes_decode() {
         end_time_unix_nano: 200,
         attributes: vec![],
         events: vec![],
+        dropped_events_count: 0,
         status: None,
     };
 
@@ -204,6 +206,7 @@ fn trace_multiple_spans_decode() {
             end_time_unix_nano: 2000 * (i as u64 + 1),
             attributes: vec![],
             events: vec![],
+            dropped_events_count: 0,
             status: None,
         })
         .collect();

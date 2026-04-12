@@ -15,6 +15,7 @@ fn test_span() -> SpanData {
             value: AnyValue::String("GET".to_string()),
         }],
         events: vec![],
+        dropped_events_count: 0,
         status: Some(SpanStatus {
             message: String::new(),
             code: StatusCode::Ok,

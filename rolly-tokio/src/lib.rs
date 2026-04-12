@@ -47,7 +47,12 @@ impl TelemetryGuard {
     /// `current_thread` tokio runtime and you need a deterministic drain.
     pub async fn shutdown(mut self) {
         self.abort_tasks();
-        self.final_metrics_flush();
+        // take() so Drop won't fire it again
+        if let Some(mf) = self.metrics_flush.take() {
+            if let Some(data) = rolly::collect_and_encode_metrics(&mf.config) {
+                mf.sink.send_metrics(data);
+            }
+        }
         if let Some(exporter) = self.exporter.take() {
             exporter.flush().await;
             exporter.shutdown().await;

@@ -53,7 +53,11 @@ impl TelemetryGuard {
     /// Flush pending telemetry and stop background tasks.
     pub async fn shutdown(mut self) {
         self.signal_background_shutdown();
-        self.final_metrics_flush();
+        if let Some(mf) = self.metrics_flush.take() {
+            if let Some(data) = rolly::collect_and_encode_metrics(&mf.config) {
+                mf.sink.send_metrics(data);
+            }
+        }
         if let Some(exporter) = self.exporter.take() {
             exporter.shutdown().await;
         }

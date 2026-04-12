@@ -66,6 +66,7 @@ pub struct SpanData {
     pub end_time_unix_nano: u64,
     pub attributes: Vec<KeyValue>,
     pub events: Vec<SpanEvent>,
+    pub dropped_events_count: u32,
     pub status: Option<SpanStatus>,
 }
 
@@ -134,7 +135,9 @@ fn encode_span(buf: &mut Vec<u8>, span: &SpanData) {
     encode_bytes_field(buf, 1, &span.trace_id);
     encode_bytes_field(buf, 2, &span.span_id);
     // field 3 = trace_state (skipped)
-    encode_bytes_field(buf, 4, &span.parent_span_id);
+    if span.parent_span_id != [0u8; 8] {
+        encode_bytes_field(buf, 4, &span.parent_span_id);
+    }
     encode_string_field(buf, 5, &span.name);
     encode_varint_field(buf, 6, span.kind as u64);
     encode_fixed64_field(buf, 7, span.start_time_unix_nano);
@@ -146,11 +149,14 @@ fn encode_span(buf: &mut Vec<u8>, span: &SpanData) {
         });
     }
 
-    // field 10 = dropped_attributes_count (skipped)
     for event in &span.events {
         encode_message_field_in_place(buf, 11, |buf| {
             encode_span_event(buf, event);
         });
+    }
+
+    if span.dropped_events_count > 0 {
+        encode_varint_field(buf, 12, span.dropped_events_count as u64);
     }
 
     if let Some(ref status) = span.status {
@@ -214,6 +220,7 @@ mod tests {
                 value: AnyValue::String("GET".to_string()),
             }],
             events: vec![],
+            dropped_events_count: 0,
             status: Some(SpanStatus {
                 message: String::new(),
                 code: StatusCode::Ok,
@@ -375,6 +382,7 @@ mod tests {
                 },
             ],
             events: vec![],
+            dropped_events_count: 0,
             status: None,
         };
         let mut buf = Vec::new();

@@ -238,6 +238,15 @@ impl MetricsRegistry {
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
         sorted.dedup();
         let mut histograms = write_lock(&self.histograms);
+        if let Some(existing) = histograms.get(name) {
+            if existing.inner.boundaries != sorted {
+                tracing::warn!(
+                    metric = name,
+                    "histogram re-registered with different boundaries; using original"
+                );
+            }
+            return existing.clone();
+        }
         histograms
             .entry(name.to_string())
             .or_insert_with(|| Histogram {

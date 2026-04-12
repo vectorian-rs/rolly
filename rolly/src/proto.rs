@@ -144,7 +144,13 @@ where
     let varint_len = encode_varint_to_slice(&mut len_buf, body_len as u64);
 
     if varint_len < MAX_LEN_BYTES {
-        // Copy the varint into the reserved slot
+        debug_assert!(
+            tag_end + varint_len <= body_start,
+            "varint overwrites body: tag_end={}, varint_len={}, body_start={}",
+            tag_end,
+            varint_len,
+            body_start
+        );
         buf.copy_within(body_start..body_start + body_len, tag_end + varint_len);
         buf[tag_end..tag_end + varint_len].copy_from_slice(&len_buf[..varint_len]);
         buf.truncate(tag_end + varint_len + body_len);

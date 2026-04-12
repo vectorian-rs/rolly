@@ -85,6 +85,7 @@ impl TelemetrySink for NullSink {
 // ── Configuration ───────────────────────────────────────────────────────
 
 /// Configuration for the telemetry stack.
+#[derive(Debug, Clone)]
 pub struct TelemetryConfig {
     pub service_name: String,
     pub service_version: String,
@@ -121,6 +122,7 @@ pub struct TelemetryConfig {
 }
 
 /// Configuration for building telemetry layers.
+#[derive(Debug, Clone)]
 pub struct LayerConfig {
     /// Whether to emit JSON-formatted logs to stderr.
     pub log_to_stderr: bool,
@@ -156,17 +158,19 @@ pub fn build_layer(
     config: &LayerConfig,
     sink: Arc<dyn TelemetrySink>,
 ) -> impl tracing_subscriber::Layer<tracing_subscriber::Registry> {
-    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-
-    let fmt_layer = if config.log_to_stderr {
-        Some(
-            fmt::layer()
-                .json()
-                .with_target(true)
-                .with_current_span(true)
-                .with_span_list(false)
-                .with_writer(std::io::stderr),
-        )
+    // EnvFilter scoped to fmt_layer only — does not affect OTLP export.
+    // OTLP filtering is controlled by sampling_rate, not RUST_LOG.
+    let filtered_fmt = if config.log_to_stderr {
+        let env_filter =
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+        let fmt_layer = fmt::layer()
+            .json()
+            .with_target(true)
+            .with_current_span(true)
+            .with_span_list(false)
+            .with_writer(std::io::stderr)
+            .with_filter(env_filter);
+        Some(fmt_layer)
     } else {
         None
     };
@@ -189,13 +193,13 @@ pub fn build_layer(
         None
     };
 
-    env_filter.and_then(fmt_layer).and_then(otlp_layer)
+    Layer::and_then(filtered_fmt, otlp_layer)
 }
 
 // ── Metrics export ──────────────────────────────────────────────────────
 
 /// Configuration for metrics export encoding.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct MetricsExportConfig {
     /// Service name, version, environment, plus any custom attributes.
     /// Converted to OTel KeyValue internally.

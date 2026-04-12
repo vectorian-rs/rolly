@@ -23,6 +23,7 @@ enum ControlMessage {
 /// Configuration for the exporter.
 ///
 /// Use `Default` for standard values (1024 channel, 512 batch, 1s flush).
+#[derive(Debug, Clone)]
 pub struct ExporterConfig {
     pub traces_url: Option<String>,
     pub logs_url: Option<String>,
