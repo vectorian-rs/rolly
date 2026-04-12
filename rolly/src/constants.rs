@@ -16,6 +16,12 @@ pub mod fields {
     pub const OTEL_STATUS_MESSAGE: &str = "otel.status_message";
 }
 
+/// Default instrumentation scope values for exported OTLP data.
+pub mod scope {
+    pub const DEFAULT_NAME: &str = "rolly";
+    pub const DEFAULT_VERSION: &str = env!("CARGO_PKG_VERSION");
+}
+
 /// Metric event name constants.
 ///
 /// Used in `tracing::info!` events with `metric`, `type`, and `value` fields.
