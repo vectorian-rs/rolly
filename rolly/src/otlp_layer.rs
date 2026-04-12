@@ -77,14 +77,13 @@ impl FieldCollector {
             }
             // Kept as a span attribute so trace_id is visible in backends
             // that display raw attributes (e.g. Jaeger, Grafana Tempo).
+            // trace_id is a wire-level OTLP field, not a span attribute.
+            // Backends (Jaeger, Tempo, Honeycomb) surface it from the wire
+            // proto directly — no need to duplicate in the attributes array.
             fields::TRACE_ID => {
                 if let Ok(bytes) = hex_to_bytes_16(value) {
                     self.trace_id = Some(bytes);
                 }
-                self.attrs.push(KeyValue {
-                    key: field.name().to_string(),
-                    value: AnyValue::String(value.to_string()),
-                });
             }
             // otel.* fields are semantic control signals consumed by OtlpLayer;
             // they map to OTLP Span fields, not attributes.
