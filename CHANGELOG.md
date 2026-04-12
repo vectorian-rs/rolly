@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-04-11
+
+### Added
+- OTel semantic span fields: `otel.kind`, `otel.status_code`, `otel.status_message` mapped to OTLP `SpanKind` and `SpanStatus` (not emitted as attributes)
+- Auto-generated trace IDs for root spans without explicit `trace_id` field (UUID v4 fallback)
+- `TelemetryGuard::shutdown()` async method for deterministic drain on both runtimes
+- `max_pending_batches` config on monoio `ExporterConfig` (default 32) — bounds memory when collector is slow or unreachable
+- `InFlightGuard` panic safety on monoio worker threads — `in_flight` counter is always decremented, even on thread panic
+- Final metrics flush on shutdown — `TelemetryGuard` now calls `collect_and_encode_metrics` before exporter drain, so the last interval is not lost
+- `otel.kind` / `otel.status_code` / `otel.status_message` constants in `constants::fields`
+- PRD v3 documenting current state and path to 1.0
+
+### Changed
+- `init_global_once` warns instead of panicking when a global tracing subscriber is already set (both runtimes)
+- **rolly-tokio:** `Exporter::shutdown()` now waits for the exporter loop to finish (was fire-and-forget)
+- **rolly-monoio:** Exporter uses separate data/control channels — flush and shutdown no longer starve under sustained traffic
+- **rolly-monoio:** Exporter loop refactored to `BatchState`/`BatchConfig` structs, eliminating parameter sprawl
+- `MetricsExportConfig` derives `Clone`
+- OtlpLayer `scope_name` changed from `"pz-o11y"` to `"rolly"`
+- Metrics registry recovers from lock poisoning instead of cascading panics (`unwrap_or_else(|p| p.into_inner())`)
+- Non-finite histogram boundaries (NaN, Inf) are filtered at construction time
+- Non-finite histogram observations are rejected early in `observe()`
+- `max_concurrent_exports` clamped to >= 1 at startup (prevents zero-permit deadlock)
+- `otel.*` fields now work via `record_debug` path (e.g. `otel.kind = %var`)
+- `eprintln!` prefix in tokio exporter changed from `"pz-o11y"` to `"rolly-tokio"`
+- Both exporters extract `try_send()` helper that distinguishes channel-full (backpressure) from channel-closed (exporter crash)
+
+### Fixed
+- Last metrics interval no longer lost on shutdown
+- Tokio shutdown no longer fire-and-forget
+- Monoio flush/shutdown no longer starves under sustained load
+- Thread panic in monoio worker no longer permanently inflates `in_flight` counter
+- `otel.*` fields via `%value` / debug path no longer silently ignored
+
 ## [0.14.0] - 2026-04-10
 
 ### Changed
@@ -168,7 +202,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Async batch exporter with configurable endpoints
 - crates.io packaging and metadata
 
-[Unreleased]: https://github.com/vectorian-rs/rolly/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/vectorian-rs/rolly/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/vectorian-rs/rolly/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/vectorian-rs/rolly/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/vectorian-rs/rolly/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/vectorian-rs/rolly/compare/v0.11.0...v0.12.0
