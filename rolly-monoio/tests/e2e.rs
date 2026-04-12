@@ -4,26 +4,47 @@ use monoio::io::{AsyncReadRent, AsyncWriteRentExt};
 use monoio::net::TcpListener;
 
 /// Accept one HTTP request, extract the body, send 200 OK.
+///
+/// Reads in a loop until the full request (headers + Content-Length body)
+/// has been received, so it works even when data arrives in multiple reads.
 async fn handle_http_request(mut stream: monoio::net::TcpStream) -> Vec<u8> {
-    let buf = vec![0u8; 65536];
-    let (result, buf) = stream.read(buf).await;
-    let n = match result {
-        Ok(n) => n,
-        Err(_) => return Vec::new(),
-    };
-    let request = &buf[..n];
+    let mut received = Vec::new();
 
-    let body = if let Some(pos) = request.windows(4).position(|w| w == b"\r\n\r\n") {
-        request[pos + 4..].to_vec()
-    } else {
-        Vec::new()
-    };
+    // Read until we have headers + full body
+    loop {
+        let buf = vec![0u8; 65536];
+        let (result, buf) = stream.read(buf).await;
+        let n = match result {
+            Ok(0) | Err(_) => break,
+            Ok(n) => n,
+        };
+        received.extend_from_slice(&buf[..n]);
 
-    let resp = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec();
-    let (result, _) = stream.write_all(resp).await;
-    let _ = result;
+        // Check if we have the full request
+        if let Some(header_end) = received.windows(4).position(|w| w == b"\r\n\r\n") {
+            let headers = std::str::from_utf8(&received[..header_end]).unwrap_or("");
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    let lower = line.to_lowercase();
+                    lower
+                        .strip_prefix("content-length:")
+                        .map(|v| v.trim().parse::<usize>().unwrap_or(0))
+                })
+                .unwrap_or(0);
+            let body_start = header_end + 4;
+            if received.len() >= body_start + content_length {
+                let body = received[body_start..body_start + content_length].to_vec();
+                let resp =
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec();
+                let (result, _) = stream.write_all(resp).await;
+                let _ = result;
+                return body;
+            }
+        }
+    }
 
-    body
+    Vec::new()
 }
 
 /// Read an HTTP request from a stream and extract the URL path from the first line.

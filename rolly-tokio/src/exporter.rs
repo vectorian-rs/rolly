@@ -382,6 +382,11 @@ async fn exporter_loop(
 
 /// Concatenate batch payloads and spawn a concurrent POST task.
 ///
+/// The semaphore permit is acquired synchronously (try_acquire) before
+/// spawning so that payloads cannot accumulate in an unbounded JoinSet
+/// when the collector is slow. If no permit is available, the batch is
+/// queued for the next flush cycle instead of spawning immediately.
+///
 /// Protobuf repeated fields merge on concatenation, so multiple
 /// `ExportTraceServiceRequest` payloads concatenated produce a valid
 /// message with multiple `ResourceSpans`.
@@ -396,9 +401,18 @@ fn flush_batch(
         return;
     }
     let url = match url {
-        Some(u) => u.to_string(),
+        Some(u) => u,
         None => {
             batch.clear();
+            return;
+        }
+    };
+
+    // Acquire permit before spawning so we never queue unbounded tasks.
+    let permit = match semaphore.clone().try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => {
+            // All export slots busy — leave batch for next flush cycle.
             return;
         }
     };
@@ -410,10 +424,10 @@ fn flush_batch(
     }
     let data = Bytes::from(payload);
     let client = client.clone();
-    let semaphore = semaphore.clone();
+    let url = url.to_string();
 
     join_set.spawn(async move {
-        let _permit = semaphore.acquire().await;
+        let _permit = permit;
         post_with_retry(&client, &url, data).await;
     });
 }

@@ -358,15 +358,18 @@ where
         let mut visitor = FieldCollector::new();
         event.record(&mut visitor);
 
-        let (trace_id, span_id, sampled) = ctx
-            .current_span()
-            .id()
-            .and_then(|id| {
-                ctx.span(id).and_then(|s| {
-                    s.extensions()
-                        .get::<SpanFields>()
-                        .map(|f| (f.trace_id, f.span_id, f.sampled))
-                })
+        // Resolve parent: use the event's explicit parent if set,
+        // otherwise fall back to the current span on this thread.
+        let parent_span = event
+            .parent()
+            .and_then(|id| ctx.span(id))
+            .or_else(|| ctx.lookup_current());
+
+        let (trace_id, span_id, sampled) = parent_span
+            .and_then(|s| {
+                s.extensions()
+                    .get::<SpanFields>()
+                    .map(|f| (f.trace_id, f.span_id, f.sampled))
             })
             .unwrap_or(([0u8; 16], [0u8; 8], true));
 

@@ -7,3 +7,6 @@ version = "0.15.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/vectorian-rs/rolly"
+
+[workspace.dependencies]
+rolly = { path = "rolly", version = "=0.15.0" }

@@ -367,6 +367,32 @@ fn owned_attrs(attrs: &[(&str, &str)]) -> Arc<Vec<(String, String)>> {
     Arc::new(owned)
 }
 
+/// Check whether stored attrs match incoming attrs (order-independent).
+/// Returns false on hash collision (different attr sets with same hash).
+///
+/// Fast path: if incoming is already sorted (common case when callers
+/// are consistent), comparison is O(n) with zero allocation.
+fn attrs_match(stored: &[(String, String)], incoming: &[(&str, &str)]) -> bool {
+    if stored.len() != incoming.len() {
+        return false;
+    }
+    // Try direct comparison first (zero-alloc if incoming is already sorted)
+    let direct_match = stored
+        .iter()
+        .zip(incoming.iter())
+        .all(|((sk, sv), (ik, iv))| sk.as_str() == *ik && sv.as_str() == *iv);
+    if direct_match {
+        return true;
+    }
+    // Fallback: sort incoming for order-independent comparison
+    let mut incoming_sorted: Vec<(&str, &str)> = incoming.to_vec();
+    incoming_sorted.sort();
+    stored
+        .iter()
+        .zip(incoming_sorted.iter())
+        .all(|((sk, sv), (ik, iv))| sk.as_str() == *ik && sv.as_str() == *iv)
+}
+
 /// Read the current span's trace_id and span_id from the tracing subscriber.
 /// Returns `None` when no span is active or no `SpanFields` extension is found.
 fn current_trace_context() -> Option<([u8; 16], [u8; 8])> {
@@ -434,8 +460,11 @@ pub struct Counter {
 
 impl Counter {
     /// Add a value to the counter for the given attribute set.
+    ///
+    /// Values above `i64::MAX` are clamped (OTLP counters use signed int64).
     pub fn add(&self, value: u64, attrs: &[(&str, &str)]) {
-        let exemplar = capture_exemplar(ExemplarValue::Int(value as i64));
+        let clamped = value.min(i64::MAX as u64) as i64;
+        let exemplar = capture_exemplar(ExemplarValue::Int(clamped));
         let key = if attrs.is_empty() {
             0
         } else {
@@ -456,12 +485,17 @@ impl Counter {
             }
             return;
         }
-        let entry = data
-            .entry(key)
-            .or_insert_with(|| (owned_attrs(attrs), 0, None));
-        entry.1 += value as i64;
-        if exemplar.is_some() {
-            entry.2 = exemplar;
+        if let Some(existing) = data.get_mut(&key) {
+            // Verify attrs match (detect hash collision)
+            if !attrs_match(&existing.0, attrs) {
+                return;
+            }
+            existing.1 = existing.1.saturating_add(clamped);
+            if exemplar.is_some() {
+                existing.2 = exemplar;
+            }
+        } else {
+            data.insert(key, (owned_attrs(attrs), clamped, exemplar));
         }
     }
 }
@@ -506,12 +540,16 @@ impl Gauge {
             }
             return;
         }
-        let entry = data
-            .entry(key)
-            .or_insert_with(|| (owned_attrs(attrs), 0.0, None));
-        entry.1 = value;
-        if exemplar.is_some() {
-            entry.2 = exemplar;
+        if let Some(existing) = data.get_mut(&key) {
+            if !attrs_match(&existing.0, attrs) {
+                return;
+            }
+            existing.1 = value;
+            if exemplar.is_some() {
+                existing.2 = exemplar;
+            }
+        } else {
+            data.insert(key, (owned_attrs(attrs), value, exemplar));
         }
     }
 }
@@ -571,31 +609,40 @@ impl Histogram {
             }
             return;
         }
-        let entry = data.entry(key).or_insert_with(|| {
+        if let Some(existing) = data.get_mut(&key) {
+            if !attrs_match(&existing.0, attrs) {
+                return;
+            }
+            existing.1.bucket_counts[bucket_idx] += 1;
+            existing.1.sum += value;
+            existing.1.count += 1;
+            if value < existing.1.min {
+                existing.1.min = value;
+            }
+            if value > existing.1.max {
+                existing.1.max = value;
+            }
+            if exemplar.is_some() {
+                existing.2 = exemplar;
+            }
+        } else {
             let num_buckets = self.inner.boundaries.len() + 1;
-            (
-                owned_attrs(attrs),
-                HistogramState {
-                    bucket_counts: vec![0; num_buckets],
-                    sum: 0.0,
-                    count: 0,
-                    min: f64::INFINITY,
-                    max: f64::NEG_INFINITY,
-                },
-                None,
-            )
-        });
-        entry.1.bucket_counts[bucket_idx] += 1;
-        entry.1.sum += value;
-        entry.1.count += 1;
-        if value < entry.1.min {
-            entry.1.min = value;
-        }
-        if value > entry.1.max {
-            entry.1.max = value;
-        }
-        if exemplar.is_some() {
-            entry.2 = exemplar;
+            let mut bucket_counts = vec![0u64; num_buckets];
+            bucket_counts[bucket_idx] = 1;
+            data.insert(
+                key,
+                (
+                    owned_attrs(attrs),
+                    HistogramState {
+                        bucket_counts,
+                        sum: value,
+                        count: 1,
+                        min: value,
+                        max: value,
+                    },
+                    exemplar,
+                ),
+            );
         }
     }
 }
