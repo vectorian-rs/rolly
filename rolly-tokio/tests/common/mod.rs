@@ -67,6 +67,7 @@ pub async fn read_http_body(stream: &mut tokio::net::TcpStream) -> Option<Vec<u8
 }
 
 /// Create a layer + exporter pointed at the given address.
+#[allow(dead_code)]
 pub fn make_layer_and_exporter(
     addr: std::net::SocketAddr,
 ) -> (

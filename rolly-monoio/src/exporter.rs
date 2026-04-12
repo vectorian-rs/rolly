@@ -65,8 +65,15 @@ pub struct Exporter {
 impl Exporter {
     /// Start the exporter background task. Returns a handle for sending data.
     ///
+    /// Validates configured URLs at init time and logs warnings for any
+    /// that don't start with `http://` or `https://`.
+    ///
     /// Must be called from within a monoio runtime context.
     pub fn start(config: ExporterConfig) -> Self {
+        validate_url("traces_url", config.traces_url.as_deref());
+        validate_url("logs_url", config.logs_url.as_deref());
+        validate_url("metrics_url", config.metrics_url.as_deref());
+
         let (tx, rx) = crossbeam_channel::bounded(config.channel_capacity);
         let (control_tx, control_rx) = crossbeam_channel::unbounded();
 
@@ -528,6 +535,14 @@ fn post_with_retry(url: &str, body: &[u8]) {
         "rolly-monoio: dropping batch after {} retries",
         RETRY_DELAYS.len()
     );
+}
+
+fn validate_url(name: &str, url: Option<&str>) {
+    if let Some(u) = url {
+        if !u.starts_with("http://") && !u.starts_with("https://") {
+            eprintln!("rolly-monoio: {name} does not start with http:// or https://: {u}");
+        }
+    }
 }
 
 #[cfg(test)]
