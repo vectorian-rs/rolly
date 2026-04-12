@@ -178,6 +178,8 @@ fn build_layer_with_null_sink_works() {
         environment: "test".into(),
         resource_attributes: vec![],
         sampling_rate: 1.0,
+        scope_name: "rolly".to_string(),
+        scope_version: "test".to_string(),
     };
     let layer = rolly::build_layer(&config, Arc::new(NullSink));
     let subscriber = tracing_subscriber::registry().with(layer);

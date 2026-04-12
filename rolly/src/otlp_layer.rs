@@ -231,6 +231,10 @@ pub struct OtlpLayerConfig<'a> {
     pub export_traces: bool,
     pub export_logs: bool,
     pub sampling_rate: f64,
+    /// Instrumentation scope name in exported OTLP data. Defaults to `"rolly"`.
+    pub scope_name: &'a str,
+    /// Instrumentation scope version. Defaults to the rolly crate version.
+    pub scope_version: &'a str,
 }
 
 /// Custom tracing Layer that encodes spans/events as OTLP protobuf and sends via TelemetrySink.
@@ -270,8 +274,8 @@ impl OtlpLayer {
         Self {
             sink: config.sink,
             resource_attrs,
-            scope_name: "rolly".to_string(),
-            scope_version: env!("CARGO_PKG_VERSION").to_string(),
+            scope_name: config.scope_name.to_string(),
+            scope_version: config.scope_version.to_string(),
             export_traces: config.export_traces,
             export_logs: config.export_logs,
             sampling_rate: config.sampling_rate,
@@ -517,6 +521,8 @@ mod tests {
             export_traces: true,
             export_logs: true,
             sampling_rate: 1.0,
+            scope_name: "rolly",
+            scope_version: "test",
         });
     }
 
@@ -536,6 +542,8 @@ mod tests {
             export_traces: true,
             export_logs: true,
             sampling_rate: 1.0,
+            scope_name: "rolly",
+            scope_version: "test",
         });
         let subscriber = tracing_subscriber::registry().with(layer);
         let _guard = tracing::subscriber::set_default(subscriber);
@@ -600,6 +608,8 @@ mod tests {
             export_traces: true,
             export_logs: true,
             sampling_rate: 1.0,
+            scope_name: "rolly",
+            scope_version: "test",
         });
         let subscriber = tracing_subscriber::registry().with(layer);
         let _guard = tracing::subscriber::set_default(subscriber);
@@ -640,6 +650,8 @@ mod tests {
             export_traces: true,
             export_logs: true,
             sampling_rate: 1.0,
+            scope_name: "rolly",
+            scope_version: "test",
         });
         let subscriber = tracing_subscriber::registry().with(layer);
         let _guard = tracing::subscriber::set_default(subscriber);
@@ -670,6 +682,8 @@ mod tests {
             export_traces: true,
             export_logs: true,
             sampling_rate: 1.0,
+            scope_name: "rolly",
+            scope_version: "test",
         });
         let subscriber = tracing_subscriber::registry().with(layer);
         let _guard = tracing::subscriber::set_default(subscriber);
@@ -715,6 +729,8 @@ mod tests {
             export_traces: true,
             export_logs: true,
             sampling_rate: 1.0,
+            scope_name: "rolly",
+            scope_version: "test",
         });
         let subscriber = tracing_subscriber::registry().with(layer);
         let _guard = tracing::subscriber::set_default(subscriber);
@@ -768,6 +784,8 @@ mod tests {
             export_traces: true,
             export_logs: true,
             sampling_rate: 1.0,
+            scope_name: "rolly",
+            scope_version: "test",
         });
         let subscriber = tracing_subscriber::registry().with(layer);
         let _guard = tracing::subscriber::set_default(subscriber);
@@ -816,6 +834,8 @@ mod tests {
             export_traces: true,
             export_logs: false,
             sampling_rate: 1.0,
+            scope_name: "rolly",
+            scope_version: "test",
         });
         let subscriber = tracing_subscriber::registry().with(layer);
         let _guard = tracing::subscriber::set_default(subscriber);
@@ -849,6 +869,8 @@ mod tests {
             export_traces: false,
             export_logs: true,
             sampling_rate: 1.0,
+            scope_name: "rolly",
+            scope_version: "test",
         });
         let subscriber = tracing_subscriber::registry().with(layer);
         let _guard = tracing::subscriber::set_default(subscriber);
@@ -932,6 +954,8 @@ mod tests {
             export_traces: true,
             export_logs: true,
             sampling_rate: 0.0,
+            scope_name: "rolly",
+            scope_version: "test",
         });
         let subscriber = tracing_subscriber::registry().with(layer);
         let _guard = tracing::subscriber::set_default(subscriber);
@@ -960,6 +984,8 @@ mod tests {
             export_traces: true,
             export_logs: true,
             sampling_rate: 1.0,
+            scope_name: "rolly",
+            scope_version: "test",
         });
         let subscriber = tracing_subscriber::registry().with(layer);
         let _guard = tracing::subscriber::set_default(subscriber);
@@ -990,6 +1016,8 @@ mod tests {
             export_traces: true,
             export_logs: true,
             sampling_rate: 0.0,
+            scope_name: "rolly",
+            scope_version: "test",
         });
         let subscriber = tracing_subscriber::registry().with(layer);
         let _guard = tracing::subscriber::set_default(subscriber);
@@ -1022,6 +1050,8 @@ mod tests {
             export_traces: true,
             export_logs: false,
             sampling_rate: 1.0,
+            scope_name: "rolly",
+            scope_version: "test",
         });
         let subscriber = tracing_subscriber::registry().with(layer);
         let _guard = tracing::subscriber::set_default(subscriber);
@@ -1066,6 +1096,8 @@ mod tests {
             export_traces: true,
             export_logs: false,
             sampling_rate: 1.0,
+            scope_name: "rolly",
+            scope_version: "test",
         });
         let subscriber = tracing_subscriber::registry().with(layer);
         let _guard = tracing::subscriber::set_default(subscriber);
@@ -1131,6 +1163,8 @@ mod tests {
             export_traces: true,
             export_logs: false,
             sampling_rate: 1.0,
+            scope_name: "rolly",
+            scope_version: "test",
         });
         let subscriber = tracing_subscriber::registry().with(layer);
         let _guard = tracing::subscriber::set_default(subscriber);
@@ -1188,6 +1222,8 @@ mod tests {
             export_traces: true,
             export_logs: false,
             sampling_rate: 1.0,
+            scope_name: "rolly",
+            scope_version: "test",
         });
         let subscriber = tracing_subscriber::registry().with(layer);
         let _guard = tracing::subscriber::set_default(subscriber);
@@ -1227,6 +1263,8 @@ mod tests {
             export_traces: true,
             export_logs: false,
             sampling_rate: 1.0,
+            scope_name: "rolly",
+            scope_version: "test",
         });
         let subscriber = tracing_subscriber::registry().with(layer);
         let _guard = tracing::subscriber::set_default(subscriber);
@@ -1278,6 +1316,8 @@ mod tests {
             export_traces: true,
             export_logs: false,
             sampling_rate: 1.0,
+            scope_name: "rolly",
+            scope_version: "test",
         });
         let subscriber = tracing_subscriber::registry().with(layer);
         let _guard = tracing::subscriber::set_default(subscriber);
@@ -1323,6 +1363,8 @@ mod tests {
             export_traces: true,
             export_logs: false,
             sampling_rate: 1.0,
+            scope_name: "rolly",
+            scope_version: "test",
         });
         let subscriber = tracing_subscriber::registry().with(layer);
         let _guard = tracing::subscriber::set_default(subscriber);
@@ -1374,6 +1416,8 @@ mod tests {
                 export_traces: true,
                 export_logs: false,
                 sampling_rate: 1.0,
+                scope_name: "rolly",
+                scope_version: "test",
             });
             let subscriber = tracing_subscriber::registry().with(layer);
             let _guard = tracing::subscriber::set_default(subscriber);
@@ -1410,6 +1454,8 @@ mod tests {
             export_traces: true,
             export_logs: true,
             sampling_rate: 0.0,
+            scope_name: "rolly",
+            scope_version: "test",
         });
         let subscriber = tracing_subscriber::registry().with(layer);
         let _guard = tracing::subscriber::set_default(subscriber);

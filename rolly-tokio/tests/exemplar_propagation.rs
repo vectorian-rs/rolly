@@ -40,6 +40,8 @@ async fn counter_exemplar_contains_span_trace_id() {
         environment: "test".into(),
         resource_attributes: vec![],
         sampling_rate: 1.0,
+        scope_name: "rolly".to_string(),
+        scope_version: "test".to_string(),
     };
     let layer = rolly::build_layer(&layer_config, sink.clone());
     let subscriber = tracing_subscriber::registry().with(layer);

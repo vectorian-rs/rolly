@@ -250,6 +250,8 @@ pub fn try_init_global(config: TelemetryConfig) -> Result<TelemetryGuard, InitEr
         environment: config.environment.clone(),
         resource_attributes: config.resource_attributes.clone(),
         sampling_rate: config.sampling_rate.unwrap_or(1.0),
+        scope_name: "rolly".to_string(),
+        scope_version: env!("CARGO_PKG_VERSION").to_string(),
     };
 
     let layer = rolly::build_layer(&layer_config, sink.clone());

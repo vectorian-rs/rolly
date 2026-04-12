@@ -31,6 +31,8 @@ fn make_dispatch(
         export_traces,
         export_logs,
         sampling_rate,
+        scope_name: "rolly",
+        scope_version: "test",
     });
     let subscriber = tracing_subscriber::registry().with(layer);
     (tracing::Dispatch::new(subscriber), rx)

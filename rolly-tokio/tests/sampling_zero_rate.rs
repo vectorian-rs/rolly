@@ -23,6 +23,8 @@ fn sampled_out_produces_zero_channel_messages_under_concurrency() {
         export_traces: true,
         export_logs: true,
         sampling_rate: 0.0,
+        scope_name: "rolly",
+        scope_version: "test",
     });
     let subscriber = tracing_subscriber::registry().with(layer);
     let dispatch = tracing::Dispatch::new(subscriber);

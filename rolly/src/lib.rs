@@ -138,6 +138,10 @@ pub struct LayerConfig {
     pub resource_attributes: Vec<(String, String)>,
     /// Probabilistic trace sampling rate (0.0–1.0). Defaults to 1.0.
     pub sampling_rate: f64,
+    /// Instrumentation scope name in exported OTLP data. Defaults to `"rolly"`.
+    pub scope_name: String,
+    /// Instrumentation scope version. Defaults to the rolly crate version.
+    pub scope_version: String,
 }
 
 /// Build telemetry layers without installing a global subscriber.
@@ -178,6 +182,8 @@ pub fn build_layer(
             export_traces: config.export_traces,
             export_logs: config.export_logs,
             sampling_rate,
+            scope_name: &config.scope_name,
+            scope_version: &config.scope_version,
         }))
     } else {
         None

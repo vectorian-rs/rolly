@@ -77,6 +77,8 @@ fn bench_subscriber() -> (
         export_traces: true,
         export_logs: true,
         sampling_rate: 1.0,
+        scope_name: "rolly",
+        scope_version: "test",
     });
     let subscriber = tracing_subscriber::registry().with(layer);
     (subscriber, rx)
