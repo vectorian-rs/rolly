@@ -48,6 +48,7 @@ impl Default for ExporterConfig {
 #[derive(Clone)]
 pub struct Exporter {
     tx: mpsc::Sender<ExportMessage>,
+    #[allow(dead_code)] // Only one strategy currently; field reserved for future variants
     backpressure_strategy: BackpressureStrategy,
 }
 
@@ -108,45 +109,27 @@ impl Exporter {
 
     /// Send encoded trace data to the exporter (non-blocking).
     pub fn send_traces(&self, data: Vec<u8>) {
-        match self.backpressure_strategy {
-            BackpressureStrategy::Drop | _ => {
-                if self
-                    .tx
-                    .try_send(ExportMessage::Traces(Bytes::from(data)))
-                    .is_err()
-                {
-                    rolly::increment_dropped_total();
-                }
-            }
-        }
+        self.try_send(ExportMessage::Traces(Bytes::from(data)));
     }
 
     /// Send encoded log data to the exporter.
     pub fn send_logs(&self, data: Vec<u8>) {
-        match self.backpressure_strategy {
-            BackpressureStrategy::Drop | _ => {
-                if self
-                    .tx
-                    .try_send(ExportMessage::Logs(Bytes::from(data)))
-                    .is_err()
-                {
-                    rolly::increment_dropped_total();
-                }
-            }
-        }
+        self.try_send(ExportMessage::Logs(Bytes::from(data)));
     }
 
     /// Send encoded metrics data to the exporter.
     pub fn send_metrics(&self, data: Vec<u8>) {
-        match self.backpressure_strategy {
-            BackpressureStrategy::Drop | _ => {
-                if self
-                    .tx
-                    .try_send(ExportMessage::Metrics(Bytes::from(data)))
-                    .is_err()
-                {
-                    rolly::increment_dropped_total();
-                }
+        self.try_send(ExportMessage::Metrics(Bytes::from(data)));
+    }
+
+    fn try_send(&self, msg: ExportMessage) {
+        match self.tx.try_send(msg) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                rolly::increment_dropped_total();
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                rolly::increment_dropped_total();
             }
         }
     }
@@ -452,7 +435,7 @@ async fn post_with_retry(client: &reqwest::Client, url: &str, data: Bytes) {
             Ok(resp) if resp.status().is_success() => return,
             Ok(resp) => {
                 eprintln!(
-                    "pz-o11y: export attempt {}/{} to {} failed: HTTP {}",
+                    "rolly-tokio: export attempt {}/{} to {} failed: HTTP {}",
                     attempt + 1,
                     RETRY_DELAYS.len(),
                     url,
@@ -461,7 +444,7 @@ async fn post_with_retry(client: &reqwest::Client, url: &str, data: Bytes) {
             }
             Err(e) => {
                 eprintln!(
-                    "pz-o11y: export attempt {}/{} to {} failed: {}",
+                    "rolly-tokio: export attempt {}/{} to {} failed: {}",
                     attempt + 1,
                     RETRY_DELAYS.len(),
                     url,
@@ -472,7 +455,7 @@ async fn post_with_retry(client: &reqwest::Client, url: &str, data: Bytes) {
         tokio::time::sleep(*delay).await;
     }
     eprintln!(
-        "pz-o11y: dropping batch after {} retries",
+        "rolly-tokio: dropping batch after {} retries",
         RETRY_DELAYS.len()
     );
 }

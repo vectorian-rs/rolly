@@ -58,6 +58,7 @@ impl Default for ExporterConfig {
 pub struct Exporter {
     tx: Sender<ExportMessage>,
     control_tx: Option<Sender<ControlMessage>>,
+    #[allow(dead_code)] // Only one strategy currently; field reserved for future variants
     backpressure_strategy: BackpressureStrategy,
 }
 
@@ -118,39 +119,27 @@ impl Exporter {
 
     /// Send encoded trace data to the exporter (non-blocking).
     pub fn send_traces(&self, data: Vec<u8>) {
-        match self.backpressure_strategy {
-            BackpressureStrategy::Drop | _ => {
-                if let Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) =
-                    self.tx.try_send(ExportMessage::Traces(Bytes::from(data)))
-                {
-                    rolly::increment_dropped_total();
-                }
-            }
-        }
+        self.try_send(ExportMessage::Traces(Bytes::from(data)));
     }
 
     /// Send encoded log data to the exporter (non-blocking).
     pub fn send_logs(&self, data: Vec<u8>) {
-        match self.backpressure_strategy {
-            BackpressureStrategy::Drop | _ => {
-                if let Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) =
-                    self.tx.try_send(ExportMessage::Logs(Bytes::from(data)))
-                {
-                    rolly::increment_dropped_total();
-                }
-            }
-        }
+        self.try_send(ExportMessage::Logs(Bytes::from(data)));
     }
 
     /// Send encoded metrics data to the exporter (non-blocking).
     pub fn send_metrics(&self, data: Vec<u8>) {
-        match self.backpressure_strategy {
-            BackpressureStrategy::Drop | _ => {
-                if let Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) =
-                    self.tx.try_send(ExportMessage::Metrics(Bytes::from(data)))
-                {
-                    rolly::increment_dropped_total();
-                }
+        self.try_send(ExportMessage::Metrics(Bytes::from(data)));
+    }
+
+    fn try_send(&self, msg: ExportMessage) {
+        match self.tx.try_send(msg) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
+                rolly::increment_dropped_total();
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                rolly::increment_dropped_total();
             }
         }
     }
@@ -471,6 +460,15 @@ fn queue_batch(
     pending_posts.push_back(PendingPost { url, payload });
 }
 
+/// Guard that decrements `in_flight` on drop, even if the thread panics.
+struct InFlightGuard(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::Release);
+    }
+}
+
 fn spawn_pending_posts(
     pending_posts: &mut VecDeque<PendingPost>,
     in_flight: &std::sync::Arc<std::sync::atomic::AtomicUsize>,
@@ -481,10 +479,10 @@ fn spawn_pending_posts(
             break;
         };
         in_flight.fetch_add(1, std::sync::atomic::Ordering::Release);
-        let in_flight = in_flight.clone();
+        let guard = InFlightGuard(in_flight.clone());
         std::thread::spawn(move || {
+            let _guard = guard;
             post_with_retry(&pending.url, &pending.payload);
-            in_flight.fetch_sub(1, std::sync::atomic::Ordering::Release);
         });
     }
 }

@@ -270,7 +270,7 @@ impl OtlpLayer {
         Self {
             sink: config.sink,
             resource_attrs,
-            scope_name: "pz-o11y".to_string(),
+            scope_name: "rolly".to_string(),
             scope_version: env!("CARGO_PKG_VERSION").to_string(),
             export_traces: config.export_traces,
             export_logs: config.export_logs,

@@ -1,7 +1,17 @@
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
+
+/// Recover from lock poisoning instead of cascading panics.
+/// An observability library must never crash the application.
+fn read_lock<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
+    lock.read().unwrap_or_else(|p| p.into_inner())
+}
+
+fn write_lock<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
+    lock.write().unwrap_or_else(|p| p.into_inner())
+}
 
 const DEFAULT_MAX_CARDINALITY: usize = 2000;
 
@@ -136,13 +146,13 @@ impl MetricsRegistry {
     ) -> Counter {
         // Fast path: read lock
         {
-            let counters = self.counters.read().unwrap();
+            let counters = read_lock(&self.counters);
             if let Some(c) = counters.get(name) {
                 return c.clone();
             }
         }
         // Slow path: write lock
-        let mut counters = self.counters.write().unwrap();
+        let mut counters = write_lock(&self.counters);
         counters
             .entry(name.to_string())
             .or_insert_with(|| Counter {
@@ -171,13 +181,13 @@ impl MetricsRegistry {
     ) -> Gauge {
         // Fast path: read lock
         {
-            let gauges = self.gauges.read().unwrap();
+            let gauges = read_lock(&self.gauges);
             if let Some(g) = gauges.get(name) {
                 return g.clone();
             }
         }
         // Slow path: write lock
-        let mut gauges = self.gauges.write().unwrap();
+        let mut gauges = write_lock(&self.gauges);
         gauges
             .entry(name.to_string())
             .or_insert_with(|| Gauge {
@@ -214,16 +224,20 @@ impl MetricsRegistry {
     ) -> Histogram {
         // Fast path: read lock
         {
-            let histograms = self.histograms.read().unwrap();
+            let histograms = read_lock(&self.histograms);
             if let Some(h) = histograms.get(name) {
                 return h.clone();
             }
         }
         // Slow path: write lock
-        let mut sorted = boundaries.to_vec();
-        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let mut sorted: Vec<f64> = boundaries
+            .iter()
+            .copied()
+            .filter(|b| b.is_finite())
+            .collect();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
         sorted.dedup();
-        let mut histograms = self.histograms.write().unwrap();
+        let mut histograms = write_lock(&self.histograms);
         histograms
             .entry(name.to_string())
             .or_insert_with(|| Histogram {
@@ -245,9 +259,9 @@ impl MetricsRegistry {
         let mut snapshots = Vec::new();
 
         {
-            let counters = self.counters.read().unwrap();
+            let counters = read_lock(&self.counters);
             for counter in counters.values() {
-                let mut data = counter.inner.data.lock().unwrap();
+                let mut data = counter.inner.data.lock().unwrap_or_else(|p| p.into_inner());
                 if data.is_empty() {
                     continue;
                 }
@@ -264,9 +278,9 @@ impl MetricsRegistry {
         }
 
         {
-            let gauges = self.gauges.read().unwrap();
+            let gauges = read_lock(&self.gauges);
             for gauge in gauges.values() {
-                let mut data = gauge.inner.data.lock().unwrap();
+                let mut data = gauge.inner.data.lock().unwrap_or_else(|p| p.into_inner());
                 if data.is_empty() {
                     continue;
                 }
@@ -283,9 +297,13 @@ impl MetricsRegistry {
         }
 
         {
-            let histograms = self.histograms.read().unwrap();
+            let histograms = read_lock(&self.histograms);
             for histogram in histograms.values() {
-                let mut data = histogram.inner.data.lock().unwrap();
+                let mut data = histogram
+                    .inner
+                    .data
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
                 if data.is_empty() {
                     continue;
                 }
@@ -423,7 +441,7 @@ impl Counter {
         } else {
             attrs_hash_unordered(attrs)
         };
-        let mut data = self.inner.data.lock().unwrap();
+        let mut data = self.inner.data.lock().unwrap_or_else(|p| p.into_inner());
         if !data.contains_key(&key) && data.len() >= self.inner.max_cardinality {
             if !self
                 .inner
@@ -473,7 +491,7 @@ impl Gauge {
         } else {
             attrs_hash_unordered(attrs)
         };
-        let mut data = self.inner.data.lock().unwrap();
+        let mut data = self.inner.data.lock().unwrap_or_else(|p| p.into_inner());
         if !data.contains_key(&key) && data.len() >= self.inner.max_cardinality {
             if !self
                 .inner
@@ -528,6 +546,9 @@ pub struct Histogram {
 impl Histogram {
     /// Record an observed value for the given attribute set.
     pub fn observe(&self, value: f64, attrs: &[(&str, &str)]) {
+        if !value.is_finite() {
+            return;
+        }
         let exemplar = capture_exemplar(ExemplarValue::Double(value));
         let bucket_idx = self.inner.boundaries.partition_point(|&b| b <= value);
         let key = if attrs.is_empty() {
@@ -535,7 +556,7 @@ impl Histogram {
         } else {
             attrs_hash_unordered(attrs)
         };
-        let mut data = self.inner.data.lock().unwrap();
+        let mut data = self.inner.data.lock().unwrap_or_else(|p| p.into_inner());
         if !data.contains_key(&key) && data.len() >= self.inner.max_cardinality {
             if !self
                 .inner
@@ -848,9 +869,9 @@ mod tests {
 
         // Inject a fake exemplar directly.
         {
-            let counters = registry.counters.read().unwrap();
+            let counters = read_lock(&registry.counters);
             let counter = counters.get("reset_test").unwrap();
-            let mut data = counter.inner.data.lock().unwrap();
+            let mut data = counter.inner.data.lock().unwrap_or_else(|p| p.into_inner());
             for entry in data.values_mut() {
                 entry.2 = Some(Exemplar {
                     trace_id: [0xAA; 16],
