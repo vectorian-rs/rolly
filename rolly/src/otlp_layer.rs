@@ -12,7 +12,8 @@ use std::sync::Arc;
 use crate::constants::fields;
 use crate::otlp_log::{encode_export_logs_request, LogData, SeverityNumber};
 use crate::otlp_trace::{
-    encode_export_trace_request, AnyValue, KeyValue, SpanData, SpanKind, SpanStatus, StatusCode,
+    encode_export_trace_request, AnyValue, KeyValue, SpanData, SpanEvent, SpanKind, SpanStatus,
+    StatusCode,
 };
 use crate::trace_id::{generate_span_id, generate_trace_id};
 
@@ -20,6 +21,11 @@ use crate::trace_id::{generate_span_id, generate_trace_id};
 
 struct SpanTiming {
     start_nanos: u64,
+}
+
+/// Events collected during a span's lifetime, exported in the OTLP events array.
+struct SpanEvents {
+    events: Vec<SpanEvent>,
 }
 
 /// Span context stored in tracing extensions. Public so PropagationLayer can read it.
@@ -333,6 +339,7 @@ where
             status_code: visitor.status_code.unwrap_or(StatusCode::Unset),
             status_message: visitor.status_message,
         });
+        ext.insert(SpanEvents { events: Vec::new() });
     }
 
     fn on_record(&self, id: &Id, values: &Record<'_>, ctx: Context<'_, S>) {
@@ -355,7 +362,7 @@ where
     }
 
     fn on_event(&self, event: &tracing::Event<'_>, ctx: Context<'_, S>) {
-        if !self.export_logs {
+        if !self.export_logs && !self.export_traces {
             return;
         }
 
@@ -370,6 +377,7 @@ where
             .or_else(|| ctx.lookup_current());
 
         let (trace_id, span_id, sampled) = parent_span
+            .as_ref()
             .and_then(|s| {
                 s.extensions()
                     .get::<SpanFields>()
@@ -377,29 +385,51 @@ where
             })
             .unwrap_or(([0u8; 16], [0u8; 8], true));
 
-        // Suppress log events for sampled-out traces
         if !sampled {
             return;
         }
 
-        let severity = level_to_severity(event.metadata().level());
-        let log = LogData {
-            time_unix_nano: now_nanos(),
-            severity_number: severity,
-            severity_text: event.metadata().level().to_string(),
-            body: AnyValue::String(visitor.message.unwrap_or_default()),
-            attributes: visitor.attrs,
-            trace_id,
-            span_id,
-        };
+        let time = now_nanos();
+        let event_name = visitor
+            .message
+            .clone()
+            .unwrap_or_else(|| event.metadata().name().to_string());
 
-        let data = encode_export_logs_request(
-            &self.resource_attrs,
-            &self.scope_name,
-            &self.scope_version,
-            &[log],
-        );
-        self.sink.send_logs(data);
+        // Attach as span event for trace view (Jaeger, Tempo, Honeycomb)
+        if self.export_traces {
+            if let Some(ref span_ref) = parent_span {
+                let mut ext = span_ref.extensions_mut();
+                if let Some(span_events) = ext.get_mut::<SpanEvents>() {
+                    span_events.events.push(SpanEvent {
+                        time_unix_nano: time,
+                        name: event_name.clone(),
+                        attributes: visitor.attrs.clone(),
+                    });
+                }
+            }
+        }
+
+        // Export as standalone log record
+        if self.export_logs {
+            let severity = level_to_severity(event.metadata().level());
+            let log = LogData {
+                time_unix_nano: time,
+                severity_number: severity,
+                severity_text: event.metadata().level().to_string(),
+                body: AnyValue::String(visitor.message.unwrap_or_default()),
+                attributes: visitor.attrs,
+                trace_id,
+                span_id,
+            };
+
+            let data = encode_export_logs_request(
+                &self.resource_attrs,
+                &self.scope_name,
+                &self.scope_version,
+                &[log],
+            );
+            self.sink.send_logs(data);
+        }
     }
 
     fn on_close(&self, id: Id, ctx: Context<'_, S>) {
@@ -410,7 +440,7 @@ where
         let span = ctx.span(&id).expect("span not found");
         let ext = span.extensions();
 
-        let (start_nanos, attrs, trace_id, span_id, parent_span_id, span_kind, status) = {
+        let (start_nanos, attrs, trace_id, span_id, parent_span_id, span_kind, status, events) = {
             let timing = match ext.get::<SpanTiming>() {
                 Some(t) => t,
                 None => return,
@@ -420,7 +450,6 @@ where
                 None => return,
             };
 
-            // Sampled-out spans are not exported
             if !fields.sampled {
                 return;
             }
@@ -433,6 +462,11 @@ where
                 }),
             };
 
+            let events = ext
+                .get::<SpanEvents>()
+                .map(|e| e.events.clone())
+                .unwrap_or_default();
+
             (
                 timing.start_nanos,
                 fields.attrs.clone(),
@@ -441,6 +475,7 @@ where
                 fields.parent_span_id,
                 fields.span_kind,
                 status,
+                events,
             )
         };
 
@@ -455,6 +490,7 @@ where
             start_time_unix_nano: start_nanos,
             end_time_unix_nano: end_nanos,
             attributes: attrs,
+            events,
             status,
         };
 

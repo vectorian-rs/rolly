@@ -14,6 +14,7 @@ fn test_span() -> SpanData {
             key: "http.method".to_string(),
             value: AnyValue::String("GET".to_string()),
         }],
+        events: vec![],
         status: Some(SpanStatus {
             message: String::new(),
             code: StatusCode::Ok,

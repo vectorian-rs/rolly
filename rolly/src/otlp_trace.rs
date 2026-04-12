@@ -45,6 +45,16 @@ pub struct SpanStatus {
     pub code: StatusCode,
 }
 
+/// An event (annotation) attached to a span.
+///
+/// OTLP Span.Event proto fields: time_unix_nano(1), name(2), attributes(3).
+#[derive(Debug, Clone)]
+pub struct SpanEvent {
+    pub time_unix_nano: u64,
+    pub name: String,
+    pub attributes: Vec<KeyValue>,
+}
+
 #[derive(Debug, Clone)]
 pub struct SpanData {
     pub trace_id: [u8; 16],
@@ -55,6 +65,7 @@ pub struct SpanData {
     pub start_time_unix_nano: u64,
     pub end_time_unix_nano: u64,
     pub attributes: Vec<KeyValue>,
+    pub events: Vec<SpanEvent>,
     pub status: Option<SpanStatus>,
 }
 
@@ -104,10 +115,21 @@ fn encode_status(buf: &mut Vec<u8>, status: &SpanStatus) {
     encode_varint_field(buf, 3, status.code as u64);
 }
 
+/// Encode a Span.Event: time_unix_nano(1 fixed64), name(2), attributes(3 repeated).
+fn encode_span_event(buf: &mut Vec<u8>, event: &SpanEvent) {
+    encode_fixed64_field(buf, 1, event.time_unix_nano);
+    encode_string_field(buf, 2, &event.name);
+    for kv in &event.attributes {
+        encode_message_field_in_place(buf, 3, |buf| {
+            encode_key_value(buf, kv);
+        });
+    }
+}
+
 /// Encode a Span message per OTLP proto field numbers:
 /// trace_id(1), span_id(2), parent_span_id(4), name(5), kind(6),
 /// start_time_unix_nano(7 fixed64), end_time_unix_nano(8 fixed64),
-/// attributes(9 repeated), status(15)
+/// attributes(9 repeated), events(11 repeated), status(15)
 fn encode_span(buf: &mut Vec<u8>, span: &SpanData) {
     encode_bytes_field(buf, 1, &span.trace_id);
     encode_bytes_field(buf, 2, &span.span_id);
@@ -121,6 +143,13 @@ fn encode_span(buf: &mut Vec<u8>, span: &SpanData) {
     for kv in &span.attributes {
         encode_message_field_in_place(buf, 9, |buf| {
             encode_key_value(buf, kv);
+        });
+    }
+
+    // field 10 = dropped_attributes_count (skipped)
+    for event in &span.events {
+        encode_message_field_in_place(buf, 11, |buf| {
+            encode_span_event(buf, event);
         });
     }
 
@@ -184,6 +213,7 @@ mod tests {
                 key: "http.method".to_string(),
                 value: AnyValue::String("GET".to_string()),
             }],
+            events: vec![],
             status: Some(SpanStatus {
                 message: String::new(),
                 code: StatusCode::Ok,
@@ -344,6 +374,7 @@ mod tests {
                     value: AnyValue::Bool(true),
                 },
             ],
+            events: vec![],
             status: None,
         };
         let mut buf = Vec::new();
