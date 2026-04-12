@@ -100,6 +100,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// Errors returned by [`try_init_global`].
+///
+/// Unlike `rolly_tokio::InitError`, this enum does not have an `Exporter`
+/// variant because [`MonoioExporter::start()`] is infallible — URL
+/// validation is deferred to POST time. The enum is `#[non_exhaustive]`
+/// so variants can be added in future releases without breaking changes.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum InitError {

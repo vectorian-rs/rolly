@@ -1,89 +1,70 @@
 # PRD: rolly v3 — Current State and Path to 1.0
 
-**Version:** 3.0
+**Version:** 3.1
 **Date:** 2026-04-11
 **Status:** Active
 **Predecessor:** [prd-rolly-v2.md](prd-rolly-v2.md)
 **Repository:** [github.com/vectorian-rs/rolly](https://github.com/vectorian-rs/rolly)
 **License:** MIT
-**Current workspace version:** 0.14.0
+**Current workspace version:** 0.15.0
 
 ---
 
 ## 1. What rolly Is
 
-rolly is a lightweight Rust observability library. Hand-rolled OTLP protobuf encoding over HTTP, built on `tracing`. Three crates in a workspace:
+rolly is a lightweight Rust observability library. Hand-rolled OTLP protobuf encoding over HTTP, built on `tracing`. 7 direct dependencies vs ~120 for the official OTel SDK, with 3x faster metrics hot path. Three crates in a workspace:
 
 - **`rolly`** — runtime-agnostic core. Encoding, metrics registry, tracing layer, trace ID generation. Zero runtime dependencies.
 - **`rolly-tokio`** — tokio transport. Batching HTTP exporter via reqwest, `TelemetryGuard`, convenience init functions.
 - **`rolly-monoio`** — monoio transport. Batching HTTP exporter via ureq on OS threads, cooperative shutdown.
 
-All three share a single workspace version.
+All three share a single workspace version via `[workspace.dependencies]`.
 
-## 2. Current State (0.14.0 released + uncommitted work)
+## 2. Current State (0.15.0 released)
 
-### 2.1 What's Done
+### 2.1 Release History
 
-The v2 PRD's three-phase plan is complete through Phase 3:
+| Version | Date | What shipped |
+|---------|------|-------------|
+| 0.11.0 | 2026-04-10 | `TelemetrySink` trait, `build_layer()`, tower removed |
+| 0.12.0 | 2026-04-10 | `rolly-tokio` created, exporter moved, core runtime-agnostic |
+| 0.13.0 | 2026-04-10 | `rolly-monoio` created, crossbeam channels, raw TCP |
+| 0.14.0 | 2026-04-10 | Monoio ureq transport, TLS support |
+| 0.15.0 | 2026-04-11 | OTel semantic fields, correctness hardening, CI pipeline |
 
-| Phase | Version | Status |
-|-------|---------|--------|
-| Phase 1: Core prep | 0.11.0 | Done. `TelemetrySink` trait, `build_layer()`, tower removed. |
-| Phase 2: Tokio split | 0.12.0 | Done. `rolly-tokio` created, exporter moved, core is runtime-agnostic. |
-| Phase 3: Monoio | 0.13.0–0.14.0 | Done. `rolly-monoio` created, ureq transport, TLS support. |
+Earlier work (pre-0.11): formal verification (Kani 19 proofs, TLA+ 2 specs), fuzzing (3 targets), property-based testing (9 proptests), HashDoS fix, mutex contention fix.
 
-Earlier work (pre-0.11): formal verification (Kani, TLA+), fuzzing, property-based testing, HashDoS fix, mutex contention fix — all complete.
+### 2.2 What 0.15.0 Delivered
 
-### 2.2 Uncommitted Work (targeting 0.15.0)
+**Features:**
+- OTel semantic span fields: `otel.kind`, `otel.status_code`, `otel.status_message`
+- Auto-generated trace IDs for root spans (UUID v4 fallback)
+- `TelemetryGuard::shutdown()` async method for deterministic drain
+- `init_global_once` graceful handling of subscriber-already-set
+- Monoio: separate data/control channels, drain quota, `BatchState`/`BatchConfig`
+- Monoio: `max_pending_batches` config (bounded memory under slow collector)
+- Monoio: `max_concurrent_exports` config
+- Monoio: cooperative shutdown for background loops
+- Final metrics flush on shutdown (last interval no longer lost)
+- GitHub Actions CI pipeline (check, fmt, clippy, test)
+- E2E exemplar propagation test
+- Monoio init-time URL validation
 
-Six files changed, ~850 lines added. This work is new functionality not covered by the v2 PRD:
-
-**1. OTel semantic span fields (`rolly/src/otlp_layer.rs`)**
-
-The layer now recognizes standard OpenTelemetry span control fields:
-
-- `otel.kind` → mapped to OTLP `SpanKind` (server, client, producer, consumer, internal)
-- `otel.status_code` → mapped to OTLP `StatusCode` (ok, error, unset)
-- `otel.status_message` → mapped to OTLP `SpanStatus.message`
-
-These are parsed by `FieldCollector` and stored in `SpanFields`. On `on_close`, they are emitted as proper OTLP span fields (not attributes). The `otel.*` fields are consumed by the layer and do not appear as span attributes — they are semantic control signals.
-
-Constants added to `constants::fields`: `OTEL_KIND`, `OTEL_STATUS_CODE`, `OTEL_STATUS_MESSAGE`.
-
-`on_record` also updates these fields, so span kind/status can be set after span creation via `span.record()`.
-
-**2. Auto-generated trace IDs for root spans (`rolly/src/otlp_layer.rs`)**
-
-Root spans without an explicit `trace_id` field now get a random trace ID via `generate_trace_id(None)`. Previously, root spans without a `trace_id` attribute would have `[0u8; 16]` — an invalid OTLP trace ID that backends reject or display incorrectly.
-
-Trace ID resolution order:
-1. Inherit from parent span (child spans always share parent's trace)
-2. Use explicit `trace_id` attribute from span fields (existing behavior — deterministic BLAKE3 from request ID)
-3. Generate a new random trace ID for root spans (new fallback)
-
-**3. `TelemetryGuard::shutdown()` async method (both runtimes)**
-
-New explicit `async fn shutdown(self)` on `TelemetryGuard` for deterministic drain. On `current_thread` tokio runtimes, `Drop` cannot block — it can only trigger a best-effort async drain. `shutdown()` gives callers a reliable way to flush before exit.
-
-Implementation: aborts background tasks, then flushes and shuts down the exporter. `Drop` calls the same `abort_tasks()` helper.
-
-**4. `init_global_once` graceful handling of "subscriber already set" (both runtimes)**
-
-`init_global_once` no longer panics when a global tracing subscriber is already set. Instead it logs a warning and returns a no-op `TelemetryGuard`. It still panics on real errors (exporter start failures in tokio).
-
-This fixes a crash in downstream frameworks (harrow) where the application sets up its own tracing subscriber before the framework calls `init_global_once`. See §4 for the full analysis.
-
-**5. Monoio exporter: separate control channel**
-
-`ExportMessage` split into data messages (`Traces`, `Logs`, `Metrics`) and `ControlMessage` (`Flush`, `Shutdown`) on a dedicated unbounded `crossbeam_channel`. This prevents control messages from being blocked behind a full data channel.
-
-**6. Monoio: `max_concurrent_exports` config**
-
-Added to `ExporterConfig` with default of 4. Matches tokio's config.
-
-**7. Monoio: cooperative shutdown for background loops**
-
-The metrics aggregation and USE metrics polling loops now check an `AtomicBool` shutdown flag each iteration. `TelemetryGuard::shutdown()` and `Drop` set this flag. Previously these loops ran until the monoio runtime exited.
+**Correctness fixes:**
+- Tokio `shutdown()` now waits for exporter loop (was fire-and-forget)
+- Tokio exporter: semaphore acquired before spawning (was unbounded JoinSet)
+- Tokio exporter: `BatchState`/`BatchConfig` refactor (parity with monoio)
+- Monoio flush/shutdown no longer starves under sustained load
+- `InFlightGuard` panic safety on monoio worker threads
+- Lock poisoning in metrics registry recovers instead of cascading panics
+- Non-finite histogram boundaries filtered; non-finite observations rejected
+- Counter u64→i64 clamped with `saturating_add`
+- Hash collision detection in metrics (attrs equality check)
+- Event parent context: uses `event.parent()` then `ctx.lookup_current()`
+- `otel.*` fields work via `record_debug` path (`%value`)
+- `scope_name` changed from `"pz-o11y"` to `"rolly"`
+- `eprintln!` prefix `"pz-o11y"` → `"rolly-tokio"` in tokio exporter
+- `max_concurrent_exports` clamped to >= 1 (both runtimes)
 
 ## 3. Architecture
 
@@ -102,16 +83,21 @@ rolly/                              # Core — runtime-agnostic, fully sync
 │   ├── trace_id.rs                 # Trace/span ID generation (BLAKE3 + UUID v4)
 │   ├── constants.rs                # Field/metric name constants (incl. otel.* fields)
 │   └── use_metrics.rs              # Linux /proc polling + UseMetricsState
+├── verification/
+│   ├── specs/                      # TLA+ specifications (exporter, metrics_registry)
+│   └── fuzz/                       # cargo-fuzz targets (hex, trace, log encoding)
 
 rolly-tokio/                        # Tokio transport
 ├── src/
 │   ├── lib.rs                      # TokioExporter, init_global_once, TelemetryGuard, spawn_metrics_loop
-│   └── exporter.rs                 # Batching HTTP exporter via reqwest
+│   └── exporter.rs                 # BatchState/BatchConfig, bounded semaphore export
 
 rolly-monoio/                       # Monoio transport
 ├── src/
 │   ├── lib.rs                      # MonoioExporter, init_global_once, TelemetryGuard
-│   └── exporter.rs                 # Batching HTTP exporter via ureq on OS threads
+│   └── exporter.rs                 # BatchState/BatchConfig, data/control channels, ureq on OS threads
+
+.github/workflows/ci.yml            # GitHub Actions: check, fmt, clippy, test
 ```
 
 ### 3.2 Dependency Flow
@@ -142,17 +128,13 @@ Libraries and frameworks must never set the global tracing subscriber. That is t
 
 ### 4.2 What Happened
 
-harrow's `.o11y()` convenience method calls `rolly_tokio::init_global_once()`, which sets the global subscriber. When rie-worker (an application using harrow) initializes its own `tracing_subscriber::fmt()` before calling `.o11y()`, the second subscriber installation panics.
+harrow's `.o11y()` convenience method calls `rolly_tokio::init_global_once()`, which sets the global subscriber. When rie-worker initializes its own `tracing_subscriber::fmt()` before calling `.o11y()`, the second subscriber installation panics.
 
 ### 4.3 Fixes Applied
 
 **In rolly (0.15.0):** `init_global_once` catches `SubscriberAlreadySet` and returns a no-op guard with a warning. Safety net only — when this triggers, the rolly OTLP layer is not installed, so no traces/logs are exported.
 
-**Recommended in harrow:** Split `.o11y()` into:
-- `.o11y(config)` — full setup (subscriber + middleware) for simple users
-- `.o11y_middleware(config)` — middleware + state only, for apps that own their subscriber
-
-`.o11y()` calls `.o11y_middleware()` internally after subscriber init. DRY.
+**Recommended in harrow:** Split `.o11y()` into `.o11y(config)` (full setup) and `.o11y_middleware(config)` (middleware + state only). `.o11y()` calls `.o11y_middleware()` internally.
 
 ## 5. Design Details
 
@@ -166,11 +148,9 @@ pub trait TelemetrySink: Send + Sync + 'static {
 }
 ```
 
-Intentionally minimal. No async methods, no flush, no shutdown. Those belong on the concrete exporter type. Implementations must be non-blocking.
+Intentionally minimal. No async methods, no flush, no shutdown. Implementations must be non-blocking.
 
 ### 5.2 OtlpLayer — OTel Semantic Fields
-
-The layer recognizes three control fields that map to OTLP span fields (not attributes):
 
 | tracing field | OTLP field | Values | Default |
 |---------------|-----------|--------|---------|
@@ -178,51 +158,62 @@ The layer recognizes three control fields that map to OTLP span fields (not attr
 | `otel.status_code` | `StatusCode` | ok, error, unset | Unset |
 | `otel.status_message` | `SpanStatus.message` | any string | None |
 
-These fields are consumed by `FieldCollector` and stored in `SpanFields`. They do not appear as span attributes in the exported OTLP data. Case-insensitive parsing (e.g., both `"server"` and `"SERVER"` work).
-
-When `status_code` is `Unset`, no `SpanStatus` is emitted. When it is `Ok` or `Error`, a `SpanStatus` with the code and optional message is included.
-
-Usage:
-```rust
-let span = tracing::info_span!(
-    "http_request",
-    "otel.kind" = "server",
-    "otel.status_code" = tracing::field::Empty,
-);
-
-// Later, after processing:
-span.record("otel.status_code", "ok");
-```
+These work via both `record_str` and `record_debug` paths (shared `record_field()` helper). They are consumed by the layer and do not appear as span attributes.
 
 ### 5.3 Trace ID Resolution
 
-Order of precedence for trace ID assignment:
+1. **Parent inheritance** — child spans always use parent's trace ID
+2. **Explicit `trace_id` field** — 32-char hex string on the span
+3. **Random generation** — root spans without `trace_id` get UUID v4
 
-1. **Parent inheritance** — child spans always use their parent's trace ID
-2. **Explicit `trace_id` field** — a 32-char hex string on the span (e.g., from harrow's deterministic BLAKE3 derivation)
-3. **Random generation** — root spans without a `trace_id` get `generate_trace_id(None)` (UUID v4 based)
+### 5.4 Event Parent Resolution
 
-This ensures every exported span has a valid, non-zero trace ID.
+`on_event` uses `event.parent()` first (explicit parent), then falls back to `ctx.lookup_current()` (thread-local current span). This correctly handles `tracing::info!(parent: &span, ...)` cross-thread events.
 
-### 5.4 TelemetryGuard
+### 5.5 Metrics Safety
 
-Both runtime crates provide `TelemetryGuard`:
+- **Lock poisoning**: all `RwLock`/`Mutex` acquisitions recover via `unwrap_or_else(|p| p.into_inner())` — observability never crashes the application
+- **Hash collisions**: `attrs_match()` verifies attribute equality after hash lookup; collisions are silently dropped, not merged
+- **Counter overflow**: `u64` input clamped to `i64::MAX`, accumulator uses `saturating_add`
+- **NaN/Infinity**: non-finite histogram boundaries filtered at construction; non-finite observations rejected in `observe()`
+- **Cardinality**: per-metric limits with once-per-metric overflow warning
+
+### 5.6 TelemetryGuard
+
+Both runtime crates provide `TelemetryGuard` with:
+- **`Drop`**: best-effort flush (background tasks aborted/signaled first, final metrics collected)
+- **`async fn shutdown(self)`**: deterministic drain with ack from exporter loop
+- **Final metrics flush**: `collect_and_encode_metrics` called before exporter shutdown so the last interval is not lost
+
+### 5.7 Exporter Architecture (both runtimes)
+
+Both exporters use the same `BatchState`/`BatchConfig` pattern:
 
 ```rust
-pub struct TelemetryGuard {
-    exporter: Option<Exporter>,
-    task_handles: Vec<JoinHandle<()>>,  // tokio only
-    background_shutdown: Option<Arc<AtomicBool>>,  // monoio only
+struct BatchConfig {
+    traces_url: Option<String>,
+    logs_url: Option<String>,
+    metrics_url: Option<String>,
+    batch_size: usize,
+    // monoio also has: max_pending_batches
+}
+
+struct BatchState {
+    traces: Vec<Bytes>,
+    logs: Vec<Bytes>,
+    metrics: Vec<Bytes>,
+    // tokio: JoinSet<()>
+    // monoio: VecDeque<PendingPost>
 }
 ```
 
-**`Drop`:** Aborts background tasks (tokio) or signals shutdown (monoio), then best-effort flush. On multi-thread tokio, uses `block_in_place`. On current-thread tokio, spawns and hopes. On monoio, sends a non-blocking shutdown message.
+Methods: `collect()`, `flush_all()`, `drain()` (tokio) / `drain_from()` (monoio).
 
-**`async fn shutdown(self)`:** Deterministic drain. Aborts tasks / signals shutdown, then awaits flush and exporter shutdown. Prefer this over `Drop` when you need guaranteed delivery.
+**Tokio**: semaphore permit acquired *before* spawning (`try_acquire_owned`) — prevents unbounded JoinSet growth. Batches left for next flush cycle when all permits busy.
 
-### 5.5 ExporterConfig
+**Monoio**: data/control channel separation, `DRAIN_QUOTA` (1024) per iteration to prevent flush starvation, `max_pending_batches` (default 32) for memory bounding, `InFlightGuard` for panic-safe worker thread cleanup.
 
-Both runtime crates expose identical config (same defaults):
+### 5.8 ExporterConfig
 
 ```rust
 pub struct ExporterConfig {
@@ -232,86 +223,42 @@ pub struct ExporterConfig {
     pub channel_capacity: usize,          // default: 1024
     pub batch_size: usize,                // default: 512
     pub flush_interval: Duration,         // default: 1s
-    pub max_concurrent_exports: usize,    // default: 4
+    pub max_concurrent_exports: usize,    // default: 4 (clamped >= 1)
+    pub max_pending_batches: usize,       // default: 32 (monoio only)
     pub backpressure_strategy: BackpressureStrategy,
 }
 ```
 
-### 5.6 Monoio Exporter Architecture
+### 5.9 Error Types
 
-The monoio exporter separates data and control into two channels:
+**rolly-tokio `InitError`**: `SubscriberAlreadySet` | `Exporter(StartError)` — tokio's `Exporter::start()` returns `Result`.
 
-- **Data channel** (`crossbeam_channel::bounded`): `ExportMessage` variants (`Traces`, `Logs`, `Metrics`). Subject to backpressure/drop.
-- **Control channel** (`crossbeam_channel::unbounded`): `ControlMessage` variants (`Flush`, `Shutdown`). Never dropped.
-
-HTTP POSTs run on spawned OS threads via `ureq`, keeping the monoio event loop responsive. The exporter loop polls both channels with `monoio::time::sleep` for batching intervals.
-
-Background loops (metrics aggregation, USE metrics) check an `AtomicBool` shutdown flag each iteration for cooperative cancellation.
-
-### 5.7 How Callers Use It
-
-**Simple app (one-liner):**
-```rust
-let _guard = rolly_tokio::init_global_once(config);
-```
-
-**Framework (composable, owns its subscriber):**
-```rust
-let exporter = rolly_tokio::TokioExporter::start(exporter_config)?;
-let sink: Arc<dyn TelemetrySink> = Arc::new(exporter.clone());
-let rolly_layer = rolly::build_layer(&layer_config, sink.clone());
-
-tracing_subscriber::registry()
-    .with(rolly_layer)
-    .with(my_custom_layer)
-    .init();
-
-let _metrics = rolly_tokio::spawn_metrics_loop(metrics_config, sink, Duration::from_secs(30));
-```
-
-**monoio runtime:**
-```rust
-let _guard = rolly_monoio::init_global_once(config);
-// Or compose manually with build_layer + MonoioExporter::start
-```
-
-**CLI tool (no runtime, stderr only):**
-```rust
-let rolly_layer = rolly::build_layer(&config, Arc::new(rolly::NullSink));
-tracing_subscriber::registry().with(rolly_layer).init();
-```
+**rolly-monoio `InitError`**: `SubscriberAlreadySet` only — monoio's `Exporter::start()` is infallible (URL validation deferred to POST time with init-time warning). Both are `#[non_exhaustive]`.
 
 ## 6. What's Preserved from v1
 
-These are the strengths rolly has carried since the beginning:
-
-- **Hand-rolled protobuf** — `proto.rs`, `otlp_trace.rs`, `otlp_log.rs`, `otlp_metrics.rs`. Zero code generation, minimal allocations, proven wire-compatible.
-- **Metrics registry** — `metrics.rs`. std::sync only. Cardinality limits, exemplar capture from tracing spans.
-- **Deterministic trace IDs** — BLAKE3 from request ID when provided, UUID v4 fallback for root spans.
-- **Sampling** — Deterministic, trace-ID-based, inherited from parent spans. Configurable rate.
-- **Backpressure** — Drop-newest, non-blocking `try_send`. Strategy is the same; channel implementation varies by runtime.
-- **Batching** — 512-item batches, 1s flush, 4 concurrent workers.
+- **Hand-rolled protobuf** — zero code generation, proven wire-compatible (19 Kani proofs + prost/opentelemetry-proto roundtrip tests)
+- **Metrics registry** — std::sync only, cardinality limits, exemplar capture, collision-safe
+- **Deterministic trace IDs** — BLAKE3 from request ID when provided, UUID v4 fallback
+- **Sampling** — deterministic, trace-ID-based, inherited from parent spans
+- **Backpressure** — drop-newest, non-blocking `try_send` with bounded export queues
+- **Batching** — 512-item batches, 1s flush, 4 concurrent workers
 
 ## 7. What Remains Before 1.0
 
-### 7.1 Immediate (0.15.0)
+### 7.1 Next Release (0.16.0)
 
-The uncommitted work described in §2.2. Needs:
+- [ ] **`trace_id` attribute duplication** — decide if keeping `trace_id` as both OTLP trace ID and span attribute is intentional (backend visibility) or should be removed
+- [ ] **`OtlpLayerConfig` scope name/version configurable** — currently hardcoded to `"rolly"` + `CARGO_PKG_VERSION`. Add fields to `OtlpLayerConfig` and `LayerConfig`
+- [ ] **Block backpressure strategy** — `BackpressureStrategy::Block` with configurable timeout for reliability-critical systems
 
-- [ ] Tests passing for all three crates
-- [ ] CHANGELOG.md updated
-- [ ] Version bumped to 0.15.0
+### 7.2 Pre-1.0 Gate
 
-### 7.2 Pre-1.0 Checklist
-
-- [ ] **API audit** — review all public types/functions for naming consistency and stability. Once 1.0 ships, the API is frozen under semver.
-- [ ] **`scope_name` hardcoded to "pz-o11y"** — `OtlpLayer::new()` sets `scope_name: "pz-o11y"`. This should be `"rolly"` or configurable. Artifact from the original project name.
-- [ ] **Error type consistency** — `rolly-tokio` has `InitError` with `SubscriberAlreadySet` and `Exporter` variants. `rolly-monoio` has `InitError` with only `SubscriberAlreadySet`. Consider whether monoio should have an `Exporter` variant for start failures.
-- [ ] **`trace_id` kept as attribute** — when a `trace_id` field is provided, it is both parsed as the OTLP trace ID and kept as a span attribute. Decide if the duplication is intentional (backend visibility) or should be removed.
-- [ ] **Span events** — OTLP spans can carry events (logs attached to spans). Currently rolly exports events only as standalone log records. Consider whether span events should also appear in the span's events array.
-- [ ] **Span links** — OTLP supports span links. Not currently implemented. Decide if needed for 1.0.
-- [ ] **README** — update with usage examples for all three crates and the OTel field semantics.
-- [ ] **Downstream verification** — verify harrow + rie-worker + harrow-monoio all work with the final API.
+- [ ] **API audit** — review all public types/functions for naming consistency and semver stability
+- [ ] **Span events** — OTLP spans carry events (logs attached to spans). Currently events are standalone log records. Decide if needed for 1.0
+- [ ] **Span links** — OTLP supports span links. Decide if needed for 1.0
+- [ ] **README** — usage examples for all three crates, OTel field semantics, migration guide
+- [ ] **Downstream verification** — verify harrow + rie-worker + harrow-monoio work with final API
 
 ### 7.3 Non-Goals for 1.0
 
@@ -323,20 +270,34 @@ The uncommitted work described in §2.2. Needs:
 
 ## 8. Version Strategy
 
-All crates share a single workspace version. Releases are pre-1.0 until the full trio ships together with a stable API.
+All crates share a single workspace version via `[workspace.dependencies]`.
 
 | Version | What ships |
 |---------|-----------|
-| 0.15.0 | OTel semantic fields, auto trace IDs, graceful init, TelemetryGuard::shutdown(), monoio exporter rework |
-| 0.16.0+ | API audit fixes, scope_name fix, any remaining pre-1.0 items |
+| 0.15.0 | **Shipped.** OTel semantic fields, correctness hardening, CI pipeline |
+| 0.16.0 | Scope name configurable, Block backpressure, trace_id decision |
 | 1.0.0 | Stable API. All three crates published together. |
 
 ## 9. Risks
 
 | Risk | Mitigation |
 |------|------------|
-| `init_global_once` no-op guard silently disables telemetry | Warning is logged. Document clearly that composable `build_layer()` is the recommended path for frameworks. |
-| `otel.*` field parsing adds overhead to every span | Parsing is a simple string match — negligible vs. channel send. Benchmark if concerned. |
-| monoio OS-thread HTTP introduces thread exhaustion under load | `max_concurrent_exports` caps it at 4 by default. Document. |
-| `scope_name: "pz-o11y"` leaks internal naming to backends | Fix before 1.0. |
-| Monoio crate maturity vs tokio | monoio exporter has separate control channel, cooperative shutdown, and ureq TLS. Functional parity achieved. |
+| `init_global_once` no-op guard silently disables telemetry | Warning is logged. `build_layer()` is the recommended path for frameworks. |
+| Only `Drop` backpressure — no guaranteed delivery option | Block strategy planned for 0.16.0. |
+| Manual protobuf correctness burden | 19 Kani proofs + wire-compat tests + 3 fuzz targets. |
+| Rapid version velocity (v0.1–v0.15 in 5 weeks) | Intentional pre-1.0. API stabilization period before 1.0. |
+| No visible CI pipeline | **Fixed** — GitHub Actions added in 0.15.0. |
+| Monoio deferred URL validation | **Mitigated** — init-time warning added in 0.15.0. |
+
+## 10. Verification
+
+| Category | Count | Location |
+|----------|-------|----------|
+| Kani proof harnesses | 19 | `proto.rs` (11), `metrics.rs` (4), `otlp_layer.rs` (3), `trace_id.rs` (1) |
+| TLA+ specifications | 2 | `verification/specs/` (exporter, metrics_registry) |
+| cargo-fuzz targets | 3 | `verification/fuzz/` (hex, trace, log encoding) |
+| Proptests | 9 | Across core modules |
+| Unit tests | 120+ | `rolly` core |
+| Integration tests | 30+ | `rolly-tokio` (18 lib + e2e + shutdown + exemplar), `rolly-monoio` (7 e2e + 5 lib) |
+| Wire-compat tests | Yes | rolly encodes → prost/opentelemetry-proto decodes |
+| CI pipeline | Yes | `.github/workflows/ci.yml` |
