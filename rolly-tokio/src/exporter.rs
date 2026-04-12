@@ -245,12 +245,14 @@ impl BatchState {
         client: &reqwest::Client,
         semaphore: &std::sync::Arc<tokio::sync::Semaphore>,
     ) {
-        loop {
+        for _ in 0..64 {
             self.flush_all(config, client, semaphore);
             self.drain().await;
             if self.batches_empty() {
-                break;
+                return;
             }
+            // Yield to let in-flight tasks complete and release permits.
+            tokio::task::yield_now().await;
         }
     }
 
