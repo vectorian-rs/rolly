@@ -68,13 +68,16 @@ impl Exporter {
             .timeout(Duration::from_secs(10))
             .build()
             .map_err(StartError::HttpClient)?;
+        let batch_config = BatchConfig {
+            traces_url: config.traces_url,
+            logs_url: config.logs_url,
+            metrics_url: config.metrics_url,
+            batch_size: config.batch_size,
+        };
         tokio::spawn(exporter_loop(
             rx,
             client,
-            config.traces_url,
-            config.logs_url,
-            config.metrics_url,
-            config.batch_size,
+            batch_config,
             config.flush_interval,
             config.max_concurrent_exports.max(1),
         ));
@@ -203,29 +206,138 @@ const RETRY_DELAYS: [Duration; 3] = [
     Duration::from_millis(1600),
 ];
 
-#[allow(clippy::too_many_arguments)]
-async fn exporter_loop(
-    mut rx: mpsc::Receiver<ExportMessage>,
-    client: reqwest::Client,
+/// Immutable config for batch accumulation.
+struct BatchConfig {
     traces_url: Option<String>,
     logs_url: Option<String>,
     metrics_url: Option<String>,
     batch_size: usize,
+}
+
+/// Mutable state for batch accumulation and in-flight export tasks.
+struct BatchState {
+    traces: Vec<Bytes>,
+    logs: Vec<Bytes>,
+    metrics: Vec<Bytes>,
+    join_set: tokio::task::JoinSet<()>,
+}
+
+impl BatchState {
+    fn new() -> Self {
+        Self {
+            traces: Vec::new(),
+            logs: Vec::new(),
+            metrics: Vec::new(),
+            join_set: tokio::task::JoinSet::new(),
+        }
+    }
+
+    /// Route a single message into the appropriate batch, flushing when
+    /// the batch reaches `config.batch_size`.
+    fn collect(
+        &mut self,
+        msg: ExportMessage,
+        config: &BatchConfig,
+        client: &reqwest::Client,
+        semaphore: &std::sync::Arc<tokio::sync::Semaphore>,
+    ) {
+        match msg {
+            ExportMessage::Traces(data) => {
+                self.traces.push(data);
+                if self.traces.len() >= config.batch_size {
+                    flush_batch(
+                        &mut self.traces,
+                        config.traces_url.as_deref(),
+                        client,
+                        semaphore,
+                        &mut self.join_set,
+                    );
+                }
+            }
+            ExportMessage::Logs(data) => {
+                self.logs.push(data);
+                if self.logs.len() >= config.batch_size {
+                    flush_batch(
+                        &mut self.logs,
+                        config.logs_url.as_deref(),
+                        client,
+                        semaphore,
+                        &mut self.join_set,
+                    );
+                }
+            }
+            ExportMessage::Metrics(data) => {
+                self.metrics.push(data);
+                if self.metrics.len() >= config.batch_size {
+                    flush_batch(
+                        &mut self.metrics,
+                        config.metrics_url.as_deref(),
+                        client,
+                        semaphore,
+                        &mut self.join_set,
+                    );
+                }
+            }
+            // Control messages handled by the loop, not here
+            ExportMessage::Flush(_) | ExportMessage::Shutdown(_) => {}
+        }
+    }
+
+    /// Flush all partial batches into export tasks.
+    fn flush_all(
+        &mut self,
+        config: &BatchConfig,
+        client: &reqwest::Client,
+        semaphore: &std::sync::Arc<tokio::sync::Semaphore>,
+    ) {
+        flush_batch(
+            &mut self.traces,
+            config.traces_url.as_deref(),
+            client,
+            semaphore,
+            &mut self.join_set,
+        );
+        flush_batch(
+            &mut self.logs,
+            config.logs_url.as_deref(),
+            client,
+            semaphore,
+            &mut self.join_set,
+        );
+        flush_batch(
+            &mut self.metrics,
+            config.metrics_url.as_deref(),
+            client,
+            semaphore,
+            &mut self.join_set,
+        );
+    }
+
+    /// Wait for all in-flight export tasks to complete.
+    async fn drain(&mut self) {
+        while self.join_set.join_next().await.is_some() {}
+    }
+
+    /// Reap completed tasks without blocking.
+    fn reap(&mut self) {
+        while self.join_set.try_join_next().is_some() {}
+    }
+}
+
+async fn exporter_loop(
+    mut rx: mpsc::Receiver<ExportMessage>,
+    client: reqwest::Client,
+    config: BatchConfig,
     flush_interval: Duration,
     max_concurrent_exports: usize,
 ) {
     use std::sync::Arc;
     use tokio::sync::Semaphore;
-    use tokio::task::JoinSet;
 
     let semaphore = Arc::new(Semaphore::new(max_concurrent_exports));
-    let mut join_set: JoinSet<()> = JoinSet::new();
-    let mut trace_batch: Vec<Bytes> = Vec::new();
-    let mut log_batch: Vec<Bytes> = Vec::new();
-    let mut metrics_batch: Vec<Bytes> = Vec::new();
+    let mut state = BatchState::new();
     let mut interval = tokio::time::interval(flush_interval);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    // Consume the first immediate tick
     interval.tick().await;
 
     loop {
@@ -233,150 +345,33 @@ async fn exporter_loop(
             biased;
             msg = rx.recv() => {
                 match msg {
-                    Some(ExportMessage::Traces(data)) => {
-                        trace_batch.push(data);
-                        if trace_batch.len() >= batch_size {
-                            flush_batch(
-                                &mut trace_batch,
-                                traces_url.as_deref(),
-                                &client,
-                                &semaphore,
-                                &mut join_set,
-                            );
-                        }
-                    }
-                    Some(ExportMessage::Logs(data)) => {
-                        log_batch.push(data);
-                        if log_batch.len() >= batch_size {
-                            flush_batch(
-                                &mut log_batch,
-                                logs_url.as_deref(),
-                                &client,
-                                &semaphore,
-                                &mut join_set,
-                            );
-                        }
-                    }
-                    Some(ExportMessage::Metrics(data)) => {
-                        metrics_batch.push(data);
-                        if metrics_batch.len() >= batch_size {
-                            flush_batch(
-                                &mut metrics_batch,
-                                metrics_url.as_deref(),
-                                &client,
-                                &semaphore,
-                                &mut join_set,
-                            );
-                        }
-                    }
                     Some(ExportMessage::Flush(done)) => {
-                        flush_batch(
-                            &mut trace_batch,
-                            traces_url.as_deref(),
-                            &client,
-                            &semaphore,
-                            &mut join_set,
-                        );
-                        flush_batch(
-                            &mut log_batch,
-                            logs_url.as_deref(),
-                            &client,
-                            &semaphore,
-                            &mut join_set,
-                        );
-                        flush_batch(
-                            &mut metrics_batch,
-                            metrics_url.as_deref(),
-                            &client,
-                            &semaphore,
-                            &mut join_set,
-                        );
-                        // Wait for all in-flight exports to complete
-                        while join_set.join_next().await.is_some() {}
+                        state.flush_all(&config, &client, &semaphore);
+                        state.drain().await;
                         let _ = done.send(());
                     }
                     Some(ExportMessage::Shutdown(done)) => {
-                        flush_batch(
-                            &mut trace_batch,
-                            traces_url.as_deref(),
-                            &client,
-                            &semaphore,
-                            &mut join_set,
-                        );
-                        flush_batch(
-                            &mut log_batch,
-                            logs_url.as_deref(),
-                            &client,
-                            &semaphore,
-                            &mut join_set,
-                        );
-                        flush_batch(
-                            &mut metrics_batch,
-                            metrics_url.as_deref(),
-                            &client,
-                            &semaphore,
-                            &mut join_set,
-                        );
-                        while join_set.join_next().await.is_some() {}
+                        state.flush_all(&config, &client, &semaphore);
+                        state.drain().await;
                         let _ = done.send(());
                         break;
                     }
+                    Some(msg) => {
+                        state.collect(msg, &config, &client, &semaphore);
+                    }
                     None => {
-                        flush_batch(
-                            &mut trace_batch,
-                            traces_url.as_deref(),
-                            &client,
-                            &semaphore,
-                            &mut join_set,
-                        );
-                        flush_batch(
-                            &mut log_batch,
-                            logs_url.as_deref(),
-                            &client,
-                            &semaphore,
-                            &mut join_set,
-                        );
-                        flush_batch(
-                            &mut metrics_batch,
-                            metrics_url.as_deref(),
-                            &client,
-                            &semaphore,
-                            &mut join_set,
-                        );
-                        while join_set.join_next().await.is_some() {}
+                        state.flush_all(&config, &client, &semaphore);
+                        state.drain().await;
                         break;
                     }
                 }
             }
             _ = interval.tick() => {
-                flush_batch(
-                    &mut trace_batch,
-                    traces_url.as_deref(),
-                    &client,
-                    &semaphore,
-                    &mut join_set,
-                );
-                flush_batch(
-                    &mut log_batch,
-                    logs_url.as_deref(),
-                    &client,
-                    &semaphore,
-                    &mut join_set,
-                );
-                flush_batch(
-                    &mut metrics_batch,
-                    metrics_url.as_deref(),
-                    &client,
-                    &semaphore,
-                    &mut join_set,
-                );
+                state.flush_all(&config, &client, &semaphore);
             }
         }
 
-        // Reap completed tasks without blocking
-        while let Some(result) = join_set.try_join_next() {
-            drop(result);
-        }
+        state.reap();
     }
 }
 
@@ -385,11 +380,7 @@ async fn exporter_loop(
 /// The semaphore permit is acquired synchronously (try_acquire) before
 /// spawning so that payloads cannot accumulate in an unbounded JoinSet
 /// when the collector is slow. If no permit is available, the batch is
-/// queued for the next flush cycle instead of spawning immediately.
-///
-/// Protobuf repeated fields merge on concatenation, so multiple
-/// `ExportTraceServiceRequest` payloads concatenated produce a valid
-/// message with multiple `ResourceSpans`.
+/// left for the next flush cycle.
 fn flush_batch(
     batch: &mut Vec<Bytes>,
     url: Option<&str>,
@@ -408,13 +399,9 @@ fn flush_batch(
         }
     };
 
-    // Acquire permit before spawning so we never queue unbounded tasks.
     let permit = match semaphore.clone().try_acquire_owned() {
         Ok(permit) => permit,
-        Err(_) => {
-            // All export slots busy — leave batch for next flush cycle.
-            return;
-        }
+        Err(_) => return,
     };
 
     let total_len: usize = batch.iter().map(|b| b.len()).sum();
