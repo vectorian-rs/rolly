@@ -17,6 +17,9 @@ use crate::otlp_trace::{
 };
 use crate::trace_id::{generate_span_id, generate_trace_id};
 
+/// Maximum events stored per span to prevent unbounded memory growth.
+const MAX_SPAN_EVENTS: usize = 128;
+
 // --- Span extensions ---
 
 struct SpanTiming {
@@ -392,31 +395,43 @@ where
         let time = now_nanos();
         let event_name = visitor
             .message
-            .clone()
+            .take()
             .unwrap_or_else(|| event.metadata().name().to_string());
 
-        // Attach as span event for trace view (Jaeger, Tempo, Honeycomb)
-        if self.export_traces {
+        let need_span_event = self.export_traces && parent_span.is_some();
+
+        // When both exports are enabled, clone attrs for span event; move into log.
+        // When only one is enabled, no cloning needed.
+        let span_event_attrs = if need_span_event && self.export_logs {
+            Some(visitor.attrs.clone())
+        } else if need_span_event {
+            Some(std::mem::take(&mut visitor.attrs))
+        } else {
+            None
+        };
+
+        if let Some(attrs) = span_event_attrs {
             if let Some(ref span_ref) = parent_span {
                 let mut ext = span_ref.extensions_mut();
                 if let Some(span_events) = ext.get_mut::<SpanEvents>() {
-                    span_events.events.push(SpanEvent {
-                        time_unix_nano: time,
-                        name: event_name.clone(),
-                        attributes: visitor.attrs.clone(),
-                    });
+                    if span_events.events.len() < MAX_SPAN_EVENTS {
+                        span_events.events.push(SpanEvent {
+                            time_unix_nano: time,
+                            name: event_name.clone(),
+                            attributes: attrs,
+                        });
+                    }
                 }
             }
         }
 
-        // Export as standalone log record
         if self.export_logs {
             let severity = level_to_severity(event.metadata().level());
             let log = LogData {
                 time_unix_nano: time,
                 severity_number: severity,
                 severity_text: event.metadata().level().to_string(),
-                body: AnyValue::String(visitor.message.unwrap_or_default()),
+                body: AnyValue::String(event_name),
                 attributes: visitor.attrs,
                 trace_id,
                 span_id,
