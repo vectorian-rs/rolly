@@ -16,6 +16,13 @@ pub mod fields {
     pub const OTEL_STATUS_MESSAGE: &str = "otel.status_message";
 }
 
+/// Default values for config structs.
+pub mod defaults {
+    pub const SERVICE_NAME: &str = "unknown_service";
+    pub const SERVICE_VERSION: &str = "0.0.0";
+    pub const ENVIRONMENT: &str = "development";
+}
+
 /// Default instrumentation scope values for exported OTLP data.
 pub mod scope {
     pub const DEFAULT_NAME: &str = "rolly";

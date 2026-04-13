@@ -136,9 +136,9 @@ pub struct TelemetryConfig {
 impl Default for TelemetryConfig {
     fn default() -> Self {
         Self {
-            service_name: "unknown_service".to_string(),
-            service_version: "0.0.0".to_string(),
-            environment: "development".to_string(),
+            service_name: constants::defaults::SERVICE_NAME.to_string(),
+            service_version: constants::defaults::SERVICE_VERSION.to_string(),
+            environment: constants::defaults::ENVIRONMENT.to_string(),
             otlp_traces_endpoint: None,
             otlp_logs_endpoint: None,
             otlp_metrics_endpoint: None,
@@ -183,9 +183,9 @@ impl Default for LayerConfig {
             log_to_stderr: false,
             export_traces: true,
             export_logs: true,
-            service_name: "unknown_service".to_string(),
-            service_version: "0.0.0".to_string(),
-            environment: "development".to_string(),
+            service_name: constants::defaults::SERVICE_NAME.to_string(),
+            service_version: constants::defaults::SERVICE_VERSION.to_string(),
+            environment: constants::defaults::ENVIRONMENT.to_string(),
             resource_attributes: Vec::new(),
             sampling_rate: 1.0,
             scope_name: constants::scope::DEFAULT_NAME.to_string(),
