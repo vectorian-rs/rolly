@@ -85,6 +85,18 @@ impl TelemetrySink for NullSink {
 // ── Configuration ───────────────────────────────────────────────────────
 
 /// Configuration for the telemetry stack.
+///
+/// Construct with struct literal + `..Default::default()` to be forward-compatible
+/// when new fields are added:
+///
+/// ```ignore
+/// let config = TelemetryConfig {
+///     service_name: "my-service".into(),
+///     service_version: "0.1.0".into(),
+///     otlp_traces_endpoint: Some("http://collector:4318".into()),
+///     ..Default::default()
+/// };
+/// ```
 #[derive(Debug, Clone)]
 pub struct TelemetryConfig {
     pub service_name: String,
@@ -121,6 +133,25 @@ pub struct TelemetryConfig {
     pub resource_attributes: Vec<(String, String)>,
 }
 
+impl Default for TelemetryConfig {
+    fn default() -> Self {
+        Self {
+            service_name: "unknown_service".to_string(),
+            service_version: "0.0.0".to_string(),
+            environment: "development".to_string(),
+            otlp_traces_endpoint: None,
+            otlp_logs_endpoint: None,
+            otlp_metrics_endpoint: None,
+            log_to_stderr: true,
+            use_metrics_interval: None,
+            metrics_flush_interval: None,
+            sampling_rate: None,
+            backpressure_strategy: BackpressureStrategy::Drop,
+            resource_attributes: Vec::new(),
+        }
+    }
+}
+
 /// Configuration for building telemetry layers.
 #[derive(Debug, Clone)]
 pub struct LayerConfig {
@@ -140,10 +171,27 @@ pub struct LayerConfig {
     pub resource_attributes: Vec<(String, String)>,
     /// Probabilistic trace sampling rate (0.0–1.0). Defaults to 1.0.
     pub sampling_rate: f64,
-    /// Instrumentation scope name in exported OTLP data. Defaults to `"rolly"`.
+    /// Instrumentation scope name in exported OTLP data.
     pub scope_name: String,
-    /// Instrumentation scope version. Defaults to the rolly crate version.
+    /// Instrumentation scope version.
     pub scope_version: String,
+}
+
+impl Default for LayerConfig {
+    fn default() -> Self {
+        Self {
+            log_to_stderr: false,
+            export_traces: true,
+            export_logs: true,
+            service_name: "unknown_service".to_string(),
+            service_version: "0.0.0".to_string(),
+            environment: "development".to_string(),
+            resource_attributes: Vec::new(),
+            sampling_rate: 1.0,
+            scope_name: constants::scope::DEFAULT_NAME.to_string(),
+            scope_version: constants::scope::DEFAULT_VERSION.to_string(),
+        }
+    }
 }
 
 /// Build telemetry layers without installing a global subscriber.
@@ -199,6 +247,8 @@ pub fn build_layer(
 // ── Metrics export ──────────────────────────────────────────────────────
 
 /// Configuration for metrics export encoding.
+///
+/// Typically constructed by the runtime crates, not by end users.
 #[derive(Debug, Clone)]
 pub struct MetricsExportConfig {
     /// Service name, version, environment, plus any custom attributes.
@@ -325,16 +375,8 @@ mod tests {
         let _config = TelemetryConfig {
             service_name: "test-service".into(),
             service_version: "0.0.1".into(),
-            environment: "test".into(),
-            otlp_traces_endpoint: None,
-            otlp_logs_endpoint: None,
-            otlp_metrics_endpoint: None,
             log_to_stderr: false,
-            use_metrics_interval: None,
-            metrics_flush_interval: None,
-            sampling_rate: None,
-            backpressure_strategy: BackpressureStrategy::Drop,
-            resource_attributes: vec![],
+            ..Default::default()
         };
     }
 
