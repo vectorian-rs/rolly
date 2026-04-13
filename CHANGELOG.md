@@ -7,39 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.15.0] - 2026-04-11
+## [0.15.0] - 2026-04-13
 
 ### Added
-- OTel semantic span fields: `otel.kind`, `otel.status_code`, `otel.status_message` mapped to OTLP `SpanKind` and `SpanStatus` (not emitted as attributes)
+- OTel semantic span fields: `otel.kind`, `otel.status_code`, `otel.status_message` mapped to OTLP `SpanKind`/`SpanStatus`
+- Span events: `tracing::info!()` inside a span now appears in OTLP span timeline (Jaeger, Tempo) in addition to standalone log records
+- `dropped_events_count` tracked and encoded (OTLP Span field 12) when events exceed `MAX_SPAN_EVENTS` (128)
 - Auto-generated trace IDs for root spans without explicit `trace_id` field (UUID v4 fallback)
 - `TelemetryGuard::shutdown()` async method for deterministic drain on both runtimes
-- `max_pending_batches` config on monoio `ExporterConfig` (default 32) — bounds memory when collector is slow or unreachable
-- `InFlightGuard` panic safety on monoio worker threads — `in_flight` counter is always decremented, even on thread panic
-- Final metrics flush on shutdown — `TelemetryGuard` now calls `collect_and_encode_metrics` before exporter drain, so the last interval is not lost
-- `otel.kind` / `otel.status_code` / `otel.status_message` constants in `constants::fields`
+- `max_pending_batches` config on monoio `ExporterConfig` (default 32) — bounds memory when collector is slow
+- `InFlightGuard` panic safety on monoio worker threads
+- Final metrics flush on shutdown — last metrics interval no longer lost
+- `scope_name` and `scope_version` configurable via `OtlpLayerConfig` and `LayerConfig`
+- `Default` impls for `TelemetryConfig` and `LayerConfig` — enables `..Default::default()` construction
+- `Debug` and `Clone` derives on `TelemetryConfig`, `LayerConfig`, `MetricsExportConfig`, `ExporterConfig` (both runtimes)
+- `constants::defaults` module with `SERVICE_NAME`, `SERVICE_VERSION`, `ENVIRONMENT`
+- `constants::scope` module with `DEFAULT_NAME`, `DEFAULT_VERSION`
+- GitHub Actions CI pipeline (check, fmt, clippy, test)
+- E2E exemplar propagation test
+- Monoio init-time URL validation (warns on malformed URLs)
 - PRD v3 documenting current state and path to 1.0
 
 ### Changed
-- `init_global_once` warns instead of panicking when a global tracing subscriber is already set (both runtimes)
-- **rolly-tokio:** `Exporter::shutdown()` now waits for the exporter loop to finish (was fire-and-forget)
-- **rolly-monoio:** Exporter uses separate data/control channels — flush and shutdown no longer starve under sustained traffic
-- **rolly-monoio:** Exporter loop refactored to `BatchState`/`BatchConfig` structs, eliminating parameter sprawl
-- `MetricsExportConfig` derives `Clone`
-- OtlpLayer `scope_name` changed from `"pz-o11y"` to `"rolly"`
-- Metrics registry recovers from lock poisoning instead of cascading panics (`unwrap_or_else(|p| p.into_inner())`)
-- Non-finite histogram boundaries (NaN, Inf) are filtered at construction time
-- Non-finite histogram observations are rejected early in `observe()`
-- `max_concurrent_exports` clamped to >= 1 at startup (prevents zero-permit deadlock)
-- `otel.*` fields now work via `record_debug` path (e.g. `otel.kind = %var`)
-- `eprintln!` prefix in tokio exporter changed from `"pz-o11y"` to `"rolly-tokio"`
-- Both exporters extract `try_send()` helper that distinguishes channel-full (backpressure) from channel-closed (exporter crash)
+- `init_global_once` warns instead of panicking when subscriber already set (both runtimes)
+- `build_layer()` scopes `EnvFilter` to fmt_layer only — OTLP export no longer affected by `RUST_LOG`
+- **rolly-tokio:** `Exporter::shutdown()` waits for exporter loop to finish (was fire-and-forget)
+- **rolly-tokio:** `flush()` retries until all batch buffers are empty (was acking before drained when semaphore full)
+- **rolly-tokio:** Exporter loop refactored to `BatchState`/`BatchConfig` (parity with monoio)
+- **rolly-monoio:** Exporter uses separate data/control channels — flush/shutdown no longer starve under sustained traffic
+- **rolly-monoio:** Exporter loop refactored to `BatchState`/`BatchConfig`
+- Metrics registry recovers from lock poisoning instead of cascading panics
+- Metrics hash collision detection: `attrs_match()` verifies attribute equality, collisions silently dropped (not merged)
+- Counter `u64` input clamped to `i64::MAX` with `saturating_add` (OTLP uses signed int64)
+- `record_u64` clamps to `i64::MAX` (was wrapping negative via `as i64`)
+- Non-finite histogram boundaries filtered at construction; non-finite observations rejected
+- `max_concurrent_exports` clamped to >= 1 (prevents zero-permit deadlock)
+- `otel.*` fields work via both `record_str` and `record_debug` paths
+- `scope_name` changed from `"pz-o11y"` to `"rolly"` (configurable)
+- `eprintln!` prefix `"pz-o11y"` → `"rolly-tokio"` in tokio exporter
+- Both exporters extract `try_send()` helper distinguishing channel-full from channel-closed
+- `trace_id` no longer duplicated as span attribute (matches OTel SDK behavior)
+- Zero-filled `parent_span_id`, `trace_id`, `span_id` omitted from OTLP encoding (absent = empty, not invalid all-zeros)
+- Histogram re-registration with different boundaries logs a warning and returns the original
+- Event parent resolution uses `event.parent()` first, then `ctx.lookup_current()` (correct explicit-parent handling)
+- `debug_assert!` in `encode_message_field_in_place` verifying buffer invariant
+- Workspace dependency centralized via `[workspace.dependencies]`
+- README rewritten for 0.15.0 — removed stale `rolly::init()` and Tower middleware references
 
 ### Fixed
-- Last metrics interval no longer lost on shutdown
-- Tokio shutdown no longer fire-and-forget
-- Monoio flush/shutdown no longer starves under sustained load
-- Thread panic in monoio worker no longer permanently inflates `in_flight` counter
-- `otel.*` fields via `%value` / debug path no longer silently ignored
+- Tokio flush acking before all batches exported when semaphore full
+- Final metrics double-fire in shutdown + Drop (now `take()` in shutdown)
+- `flush_and_drain` bounded to 64 iterations to prevent busy-spin
+- Hash collision silently merging different attribute sets into one metric
+- Standalone log events misattributing trace context (was using current span, not event parent)
+- Span event truncation silent (now tracks and encodes `dropped_events_count`)
 
 ## [0.14.0] - 2026-04-10
 
