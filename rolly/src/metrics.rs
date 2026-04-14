@@ -153,6 +153,17 @@ impl MetricsRegistry {
         }
         // Slow path: write lock
         let mut counters = write_lock(&self.counters);
+        if let Some(existing) = counters.get(name) {
+            if existing.inner.description != description
+                || existing.inner.max_cardinality != max_cardinality
+            {
+                tracing::warn!(
+                    metric = name,
+                    "counter re-registered with different metadata; using original"
+                );
+            }
+            return existing.clone();
+        }
         counters
             .entry(name.to_string())
             .or_insert_with(|| Counter {
@@ -188,6 +199,17 @@ impl MetricsRegistry {
         }
         // Slow path: write lock
         let mut gauges = write_lock(&self.gauges);
+        if let Some(existing) = gauges.get(name) {
+            if existing.inner.description != description
+                || existing.inner.max_cardinality != max_cardinality
+            {
+                tracing::warn!(
+                    metric = name,
+                    "gauge re-registered with different metadata; using original"
+                );
+            }
+            return existing.clone();
+        }
         gauges
             .entry(name.to_string())
             .or_insert_with(|| Gauge {
@@ -527,7 +549,12 @@ pub struct Gauge {
 
 impl Gauge {
     /// Set the gauge to a value for the given attribute set.
+    ///
+    /// Non-finite values (NaN, Infinity) are rejected.
     pub fn set(&self, value: f64, attrs: &[(&str, &str)]) {
+        if !value.is_finite() {
+            return;
+        }
         let exemplar = capture_exemplar(ExemplarValue::Double(value));
         let key = if attrs.is_empty() {
             0

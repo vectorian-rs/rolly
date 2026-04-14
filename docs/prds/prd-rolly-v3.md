@@ -264,7 +264,6 @@ pub struct ExporterConfig {
 
 - gRPC transport (HTTP POST is simpler and sufficient)
 - Multi-runtime within a single process
-- Converting tracing-emitted metric events into registry-backed instruments
 - Changing the protobuf encoding
 - Changing the metrics registry internals
 

@@ -54,8 +54,12 @@ impl TelemetryGuard {
     pub async fn shutdown(mut self) {
         self.signal_background_shutdown();
         if let Some(mf) = self.metrics_flush.take() {
-            if let Some(data) = rolly::collect_and_encode_metrics(&mf.config) {
-                mf.sink.send_metrics(data);
+            if let Some(ref exporter) = self.exporter {
+                // Drain channel first to make room for final metrics
+                exporter.flush().await;
+                if let Some(data) = rolly::collect_and_encode_metrics(&mf.config) {
+                    mf.sink.send_metrics(data);
+                }
             }
         }
         if let Some(exporter) = self.exporter.take() {

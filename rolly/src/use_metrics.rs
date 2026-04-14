@@ -1,7 +1,7 @@
 //! USE metrics collector — reads `/proc/self/stat` and `/proc/self/statm` on Linux.
 //!
-//! Emits `process.cpu.utilization` and `process.memory.usage` as tracing events
-//! at a configurable interval. No-op on non-Linux platforms.
+//! Records `process.cpu.utilization` and `process.memory.usage` as registry-backed
+//! gauges, exported as OTLP metrics. No-op on non-Linux platforms.
 
 /// Stateful baseline for USE metrics polling.
 ///
@@ -14,13 +14,17 @@ pub struct UseMetricsState {
     prev_cpu_ticks: Option<u64>,
     #[cfg(target_os = "linux")]
     prev_instant: Option<std::time::Instant>,
+    #[cfg(target_os = "linux")]
+    cpu_gauge: Option<crate::Gauge>,
+    #[cfg(target_os = "linux")]
+    mem_gauge: Option<crate::Gauge>,
 }
 
 /// Poll USE metrics once.
 ///
 /// Reads `/proc/self/stat` and `/proc/self/statm` synchronously, updates
-/// `state`, and emits metric-shaped `tracing::info!` events. The caller
-/// owns scheduling.
+/// `state`, and records gauge values in the global metrics registry.
+/// The caller owns scheduling.
 ///
 /// Only meaningful on Linux; returns immediately on other platforms.
 pub(crate) fn poll_once(state: &mut UseMetricsState) {
@@ -38,8 +42,26 @@ pub(crate) fn poll_once(state: &mut UseMetricsState) {
 #[cfg(target_os = "linux")]
 fn poll_once_linux(state: &mut UseMetricsState) {
     let now = std::time::Instant::now();
-    let page_size = page_size_bytes();
-    let clock_ticks = clock_ticks_per_sec();
+
+    let page_size = match page_size_bytes() {
+        Some(ps) => ps,
+        None => return,
+    };
+    let clock_ticks = match clock_ticks_per_sec() {
+        Some(ct) => ct,
+        None => return,
+    };
+
+    // Lazily create gauges on first poll
+    let cpu_gauge = state.cpu_gauge.get_or_insert_with(|| {
+        crate::gauge(
+            "process.cpu.utilization",
+            "Process CPU utilization (0.0–1.0+)",
+        )
+    });
+    let mem_gauge = state.mem_gauge.get_or_insert_with(|| {
+        crate::gauge("process.memory.usage", "Process resident set size in bytes")
+    });
 
     if let Some((utime, stime)) = read_cpu_ticks() {
         let total_ticks = utime + stime;
@@ -52,12 +74,7 @@ fn poll_once_linux(state: &mut UseMetricsState) {
             } else {
                 0.0
             };
-
-            tracing::info!(
-                metric = "process.cpu.utilization",
-                r#type = "gauge",
-                value = utilization,
-            );
+            cpu_gauge.set(utilization, &[]);
         }
         state.prev_cpu_ticks = Some(total_ticks);
         state.prev_instant = Some(now);
@@ -65,24 +82,30 @@ fn poll_once_linux(state: &mut UseMetricsState) {
 
     if let Some(rss_pages) = read_rss_pages() {
         let rss_bytes = rss_pages * page_size;
-        tracing::info!(
-            metric = "process.memory.usage",
-            r#type = "gauge",
-            value = rss_bytes,
-        );
+        mem_gauge.set(rss_bytes as f64, &[]);
     }
 }
 
 #[cfg(target_os = "linux")]
-fn page_size_bytes() -> u64 {
+fn page_size_bytes() -> Option<u64> {
     // SAFETY: sysconf(_SC_PAGESIZE) is always safe to call.
-    unsafe { libc::sysconf(libc::_SC_PAGESIZE) as u64 }
+    let val = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    if val > 0 {
+        Some(val as u64)
+    } else {
+        None
+    }
 }
 
 #[cfg(target_os = "linux")]
-fn clock_ticks_per_sec() -> u64 {
+fn clock_ticks_per_sec() -> Option<u64> {
     // SAFETY: sysconf(_SC_CLK_TCK) is always safe to call.
-    unsafe { libc::sysconf(libc::_SC_CLK_TCK) as u64 }
+    let val = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    if val > 0 {
+        Some(val as u64)
+    } else {
+        None
+    }
 }
 
 /// Read utime (field 14) and stime (field 15) from `/proc/self/stat`.
@@ -93,7 +116,6 @@ fn read_cpu_ticks() -> Option<(u64, u64)> {
     let after_comm = data.rsplit_once(')')?.1;
     let fields: Vec<&str> = after_comm.split_whitespace().collect();
     // After closing paren: field[0]=state, field[1]=ppid, ... field[11]=utime, field[12]=stime
-    // (0-indexed from after the comm close-paren)
     let utime = fields.get(11)?.parse::<u64>().ok()?;
     let stime = fields.get(12)?.parse::<u64>().ok()?;
     Some((utime, stime))
@@ -147,13 +169,15 @@ mod tests {
     #[test]
     fn page_size_is_reasonable() {
         let ps = page_size_bytes();
-        assert!(ps >= 4096, "page size should be at least 4096");
+        assert!(ps.is_some(), "sysconf should succeed");
+        assert!(ps.unwrap() >= 4096, "page size should be at least 4096");
     }
 
     #[cfg(target_os = "linux")]
     #[test]
     fn clock_ticks_is_reasonable() {
         let ct = clock_ticks_per_sec();
-        assert!(ct >= 100, "clock ticks should be at least 100");
+        assert!(ct.is_some(), "sysconf should succeed");
+        assert!(ct.unwrap() >= 100, "clock ticks should be at least 100");
     }
 }
