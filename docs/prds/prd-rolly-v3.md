@@ -6,7 +6,7 @@
 **Predecessor:** [prd-rolly-v2.md](prd-rolly-v2.md)
 **Repository:** [github.com/vectorian-rs/rolly](https://github.com/vectorian-rs/rolly)
 **License:** MIT
-**Current workspace version:** 0.15.0
+**Current workspace version:** 0.16.0
 
 ---
 
@@ -246,24 +246,30 @@ pub struct ExporterConfig {
 
 ## 7. What Remains Before 1.0
 
-### 7.1 Next Release (0.16.0)
+### 7.1 Done (0.15.0–0.16.0)
 
-- [ ] **`trace_id` attribute duplication** — decide if keeping `trace_id` as both OTLP trace ID and span attribute is intentional (backend visibility) or should be removed
-- [ ] **`OtlpLayerConfig` scope name/version configurable** — currently hardcoded to `"rolly"` + `CARGO_PKG_VERSION`. Add fields to `OtlpLayerConfig` and `LayerConfig`
-- [ ] **Block backpressure strategy** — `BackpressureStrategy::Block` with configurable timeout for reliability-critical systems
+- [x] `trace_id` attribute duplication — removed, matches OTel SDK behavior
+- [x] Scope name/version configurable via `OtlpLayerConfig` and `LayerConfig`
+- [x] Span events — events inside spans appear in OTLP span timeline + standalone log records
+- [x] Span links — declared non-goal for 1.0
+- [x] README — rewritten with all three crates, OTel field semantics
+- [x] API audit — Debug/Clone derives, Default impls, config validation, histogram OTel semantics
+- [x] USE metrics — converted from tracing events to registry-backed Gauges
+- [x] Histogram boundary semantics — fixed to OTel inclusive upper bound
+- [x] Root event parenting — `event.is_root()` respected
+- [x] Config validation — zero intervals/capacities rejected or clamped (both runtimes)
 
 ### 7.2 Pre-1.0 Gate
 
-- [ ] **API audit** — review all public types/functions for naming consistency and semver stability
-- [ ] **Span events** — OTLP spans carry events (logs attached to spans). Currently events are standalone log records. Decide if needed for 1.0
-- [ ] **Span links** — OTLP supports span links. Decide if needed for 1.0
-- [ ] **README** — usage examples for all three crates, OTel field semantics, migration guide
+- [ ] **Block backpressure strategy** — `BackpressureStrategy::Block` with configurable timeout (or declare non-goal)
 - [ ] **Downstream verification** — verify harrow + rie-worker + harrow-monoio work with final API
+- [ ] **Publish 0.15.0 + 0.16.0 to crates.io**
 
 ### 7.3 Non-Goals for 1.0
 
 - gRPC transport (HTTP POST is simpler and sufficient)
 - Multi-runtime within a single process
+- Span links
 - Changing the protobuf encoding
 - Changing the metrics registry internals
 
@@ -273,8 +279,8 @@ All crates share a single workspace version via `[workspace.dependencies]`.
 
 | Version | What ships |
 |---------|-----------|
-| 0.15.0 | **Shipped.** OTel semantic fields, correctness hardening, CI pipeline |
-| 0.16.0 | Scope name configurable, Block backpressure, trace_id decision |
+| 0.15.0 | **Shipped.** OTel semantic fields, correctness hardening, CI pipeline, span events, README rewrite |
+| 0.16.0 | **Shipped.** USE metrics as real gauges, OTel histogram semantics, config validation, event parenting fix |
 | 1.0.0 | Stable API. All three crates published together. |
 
 ## 9. Risks
@@ -282,9 +288,8 @@ All crates share a single workspace version via `[workspace.dependencies]`.
 | Risk | Mitigation |
 |------|------------|
 | `init_global_once` no-op guard silently disables telemetry | Warning is logged. `build_layer()` is the recommended path for frameworks. |
-| Only `Drop` backpressure — no guaranteed delivery option | Block strategy planned for 0.16.0. |
+| Only `Drop` backpressure — no guaranteed delivery option | Acceptable for observability use case. Block strategy deferred. |
 | Manual protobuf correctness burden | 19 Kani proofs + wire-compat tests + 3 fuzz targets. |
-| Rapid version velocity (v0.1–v0.15 in 5 weeks) | Intentional pre-1.0. API stabilization period before 1.0. |
 | No visible CI pipeline | **Fixed** — GitHub Actions added in 0.15.0. |
 | Monoio deferred URL validation | **Mitigated** — init-time warning added in 0.15.0. |
 

@@ -18,7 +18,7 @@ All three share a workspace version. Add the runtime crate that matches your asy
 
 ```toml
 [dependencies]
-rolly-tokio = "0.15"
+rolly-tokio = "0.16"
 ```
 
 ```rust
@@ -52,7 +52,7 @@ Set any endpoint to `None` to disable that signal. Hold the guard until shutdown
 
 ```toml
 [dependencies]
-rolly-monoio = "0.15"
+rolly-monoio = "0.16"
 ```
 
 ```rust
