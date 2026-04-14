@@ -219,6 +219,22 @@ pub fn try_init_global(config: TelemetryConfig) -> Result<TelemetryGuard, InitEr
     let export_logs = config.otlp_logs_endpoint.is_some();
     let export_metrics = config.otlp_metrics_endpoint.is_some();
 
+    // Reject zero-duration intervals that would panic in tokio::time::interval.
+    if let Some(interval) = config.use_metrics_interval {
+        if interval.is_zero() {
+            return Err(InitError::Exporter(StartError::InvalidConfig(
+                "use_metrics_interval must be > 0",
+            )));
+        }
+    }
+    if let Some(interval) = config.metrics_flush_interval {
+        if interval.is_zero() {
+            return Err(InitError::Exporter(StartError::InvalidConfig(
+                "metrics_flush_interval must be > 0",
+            )));
+        }
+    }
+
     let metrics_url = config
         .otlp_metrics_endpoint
         .as_deref()

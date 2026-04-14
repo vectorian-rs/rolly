@@ -64,6 +64,13 @@ impl Exporter {
         // Verify a tokio runtime is available before doing anything.
         let _handle = tokio::runtime::Handle::try_current().map_err(|_| StartError::NoRuntime)?;
 
+        if config.channel_capacity == 0 {
+            return Err(StartError::InvalidConfig("channel_capacity must be > 0"));
+        }
+        if config.flush_interval.is_zero() {
+            return Err(StartError::InvalidConfig("flush_interval must be > 0"));
+        }
+
         let (tx, rx) = mpsc::channel(config.channel_capacity);
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
@@ -179,6 +186,8 @@ pub enum StartError {
     /// No tokio runtime is active. Call from within a `#[tokio::main]`
     /// or `tokio::runtime::Runtime` context.
     NoRuntime,
+    /// A configuration value is invalid (e.g. zero capacity or zero interval).
+    InvalidConfig(&'static str),
 }
 
 impl std::fmt::Display for StartError {
@@ -186,6 +195,7 @@ impl std::fmt::Display for StartError {
         match self {
             Self::HttpClient(e) => write!(f, "failed to build HTTP client: {}", e),
             Self::NoRuntime => write!(f, "no tokio runtime active"),
+            Self::InvalidConfig(msg) => write!(f, "invalid exporter config: {}", msg),
         }
     }
 }
@@ -194,7 +204,7 @@ impl std::error::Error for StartError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::HttpClient(e) => Some(e),
-            Self::NoRuntime => None,
+            Self::NoRuntime | Self::InvalidConfig(_) => None,
         }
     }
 }

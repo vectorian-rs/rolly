@@ -286,13 +286,27 @@ impl MetricsRegistry {
         {
             let histograms = read_lock(&self.histograms);
             if let Some(h) = histograms.get(name) {
-                // Quick boundary conflict check: compare length first to
-                // avoid sorting in the common case (same boundaries).
-                if h.inner.boundaries.len() != boundaries.len() {
+                if h.inner.description != description || h.inner.max_cardinality != max_cardinality
+                {
                     tracing::warn!(
                         metric = name,
-                        "histogram re-registered with different boundaries; using original"
+                        "histogram re-registered with different metadata; using original"
                     );
+                } else {
+                    // Normalize incoming boundaries for comparison
+                    let mut incoming: Vec<f64> = boundaries
+                        .iter()
+                        .copied()
+                        .filter(|b| b.is_finite())
+                        .collect();
+                    incoming.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                    incoming.dedup();
+                    if h.inner.boundaries != incoming {
+                        tracing::warn!(
+                            metric = name,
+                            "histogram re-registered with different boundaries; using original"
+                        );
+                    }
                 }
                 return h.clone();
             }
