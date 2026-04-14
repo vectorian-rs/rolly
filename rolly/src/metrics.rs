@@ -98,6 +98,23 @@ pub enum MetricSnapshot {
     },
 }
 
+#[derive(Debug, Clone, Copy)]
+enum MetricKind {
+    Counter,
+    Gauge,
+    Histogram,
+}
+
+impl MetricKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            MetricKind::Counter => "counter",
+            MetricKind::Gauge => "gauge",
+            MetricKind::Histogram => "histogram",
+        }
+    }
+}
+
 /// Central registry holding all counters, gauges, and histograms.
 pub struct MetricsRegistry {
     counters: RwLock<HashMap<String, Counter>>,
@@ -133,22 +150,27 @@ impl MetricsRegistry {
     }
 
     /// Warn if a metric name is already used by a different instrument type.
-    fn warn_cross_type_conflict(&self, name: &str, kind: &str) {
-        let in_counters = read_lock(&self.counters).contains_key(name);
-        let in_gauges = read_lock(&self.gauges).contains_key(name);
-        let in_histograms = read_lock(&self.histograms).contains_key(name);
-
+    /// Called on the slow path only (first registration).
+    fn warn_cross_type_conflict(&self, name: &str, kind: MetricKind) {
         let conflict = match kind {
-            "counter" => in_gauges || in_histograms,
-            "gauge" => in_counters || in_histograms,
-            "histogram" => in_counters || in_gauges,
-            _ => false,
+            MetricKind::Counter => {
+                read_lock(&self.gauges).contains_key(name)
+                    || read_lock(&self.histograms).contains_key(name)
+            }
+            MetricKind::Gauge => {
+                read_lock(&self.counters).contains_key(name)
+                    || read_lock(&self.histograms).contains_key(name)
+            }
+            MetricKind::Histogram => {
+                read_lock(&self.counters).contains_key(name)
+                    || read_lock(&self.gauges).contains_key(name)
+            }
         };
 
         if conflict {
             tracing::warn!(
                 metric = name,
-                requested = kind,
+                requested = kind.as_str(),
                 "metric name already registered as a different instrument type"
             );
         }
@@ -166,7 +188,6 @@ impl MetricsRegistry {
         description: &str,
         max_cardinality: usize,
     ) -> Counter {
-        self.warn_cross_type_conflict(name, "counter");
         // Fast path: read lock
         {
             let counters = read_lock(&self.counters);
@@ -182,6 +203,7 @@ impl MetricsRegistry {
             }
         }
         // Slow path: write lock
+        self.warn_cross_type_conflict(name, MetricKind::Counter);
         let mut counters = write_lock(&self.counters);
         counters
             .entry(name.to_string())
@@ -209,7 +231,6 @@ impl MetricsRegistry {
         description: &str,
         max_cardinality: usize,
     ) -> Gauge {
-        self.warn_cross_type_conflict(name, "gauge");
         // Fast path: read lock
         {
             let gauges = read_lock(&self.gauges);
@@ -225,6 +246,7 @@ impl MetricsRegistry {
             }
         }
         // Slow path: write lock
+        self.warn_cross_type_conflict(name, MetricKind::Gauge);
         let mut gauges = write_lock(&self.gauges);
         gauges
             .entry(name.to_string())
@@ -260,7 +282,6 @@ impl MetricsRegistry {
         boundaries: &[f64],
         max_cardinality: usize,
     ) -> Histogram {
-        self.warn_cross_type_conflict(name, "histogram");
         // Fast path: read lock
         {
             let histograms = read_lock(&self.histograms);
@@ -277,6 +298,7 @@ impl MetricsRegistry {
             }
         }
         // Slow path: write lock
+        self.warn_cross_type_conflict(name, MetricKind::Histogram);
         let mut sorted: Vec<f64> = boundaries
             .iter()
             .copied()
