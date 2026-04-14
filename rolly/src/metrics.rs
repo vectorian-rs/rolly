@@ -132,6 +132,28 @@ impl MetricsRegistry {
         }
     }
 
+    /// Warn if a metric name is already used by a different instrument type.
+    fn warn_cross_type_conflict(&self, name: &str, kind: &str) {
+        let in_counters = read_lock(&self.counters).contains_key(name);
+        let in_gauges = read_lock(&self.gauges).contains_key(name);
+        let in_histograms = read_lock(&self.histograms).contains_key(name);
+
+        let conflict = match kind {
+            "counter" => in_gauges || in_histograms,
+            "gauge" => in_counters || in_histograms,
+            "histogram" => in_counters || in_gauges,
+            _ => false,
+        };
+
+        if conflict {
+            tracing::warn!(
+                metric = name,
+                requested = kind,
+                "metric name already registered as a different instrument type"
+            );
+        }
+    }
+
     /// Get or create a counter by name.
     pub fn counter(&self, name: &str, description: &str) -> Counter {
         self.counter_with_max_cardinality(name, description, self.default_max_cardinality)
@@ -144,6 +166,7 @@ impl MetricsRegistry {
         description: &str,
         max_cardinality: usize,
     ) -> Counter {
+        self.warn_cross_type_conflict(name, "counter");
         // Fast path: read lock
         {
             let counters = read_lock(&self.counters);
@@ -186,6 +209,7 @@ impl MetricsRegistry {
         description: &str,
         max_cardinality: usize,
     ) -> Gauge {
+        self.warn_cross_type_conflict(name, "gauge");
         // Fast path: read lock
         {
             let gauges = read_lock(&self.gauges);
@@ -236,6 +260,7 @@ impl MetricsRegistry {
         boundaries: &[f64],
         max_cardinality: usize,
     ) -> Histogram {
+        self.warn_cross_type_conflict(name, "histogram");
         // Fast path: read lock
         {
             let histograms = read_lock(&self.histograms);

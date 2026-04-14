@@ -354,7 +354,14 @@ where
         if let Some(fields) = ext.get_mut::<SpanFields>() {
             let mut visitor = FieldCollector::new();
             values.record(&mut visitor);
-            fields.attrs.extend(visitor.attrs);
+            // Replace existing attributes by key, append new ones.
+            for new_kv in visitor.attrs {
+                if let Some(existing) = fields.attrs.iter_mut().find(|kv| kv.key == new_kv.key) {
+                    existing.value = new_kv.value;
+                } else {
+                    fields.attrs.push(new_kv);
+                }
+            }
             if let Some(kind) = visitor.span_kind {
                 fields.span_kind = kind;
             }
