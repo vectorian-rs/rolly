@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-04-14
+
+### Changed
+- **Breaking:** USE metrics (`process.cpu.utilization`, `process.memory.usage`) now use real `Gauge` instruments instead of `tracing::info!` events — they appear as OTLP metrics, not logs
+- `sysconf` return value validated before use — skips USE metrics on failure instead of producing bogus values
+- `Gauge::set` rejects non-finite values (NaN, Infinity), matching `Histogram::observe` behavior
+- Counter and gauge re-registration warns on conflicting metadata (description, cardinality limit)
+- Cross-type metric name conflicts (same name as counter + gauge, etc.) emit a warning via `MetricKind` enum
+- `on_record()` replaces existing span attributes by key instead of appending duplicates
+- Metric conflict checks moved to slow path only (no unnecessary read locks on fast-path cache hits)
+- Final metrics flush drains exporter channel first to avoid backpressure drop on shutdown
+
+### Fixed
+- `span.record()` no longer produces duplicate OTLP attributes when updating a field set at span creation
+- USE metrics now exported as OTLP metrics even when `export_logs` is disabled
+- `sysconf(-1)` no longer silently produces absurd CPU/memory values on Linux
+
 ## [0.15.0] - 2026-04-13
 
 ### Added
@@ -223,7 +240,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Async batch exporter with configurable endpoints
 - crates.io packaging and metadata
 
-[Unreleased]: https://github.com/vectorian-rs/rolly/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/vectorian-rs/rolly/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/vectorian-rs/rolly/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/vectorian-rs/rolly/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/vectorian-rs/rolly/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/vectorian-rs/rolly/compare/v0.12.0...v0.13.0

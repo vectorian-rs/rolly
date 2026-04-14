@@ -3,10 +3,10 @@ members = ["rolly", "rolly-tokio", "rolly-monoio"]
 resolver = "2"
 
 [workspace.package]
-version = "0.15.0"
+version = "0.16.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/vectorian-rs/rolly"
 
 [workspace.dependencies]
-rolly = { path = "rolly", version = "=0.15.0" }
+rolly = { path = "rolly", version = "=0.16.0" }
