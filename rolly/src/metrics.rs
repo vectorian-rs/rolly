@@ -148,22 +148,18 @@ impl MetricsRegistry {
         {
             let counters = read_lock(&self.counters);
             if let Some(c) = counters.get(name) {
+                if c.inner.description != description || c.inner.max_cardinality != max_cardinality
+                {
+                    tracing::warn!(
+                        metric = name,
+                        "counter re-registered with different metadata; using original"
+                    );
+                }
                 return c.clone();
             }
         }
         // Slow path: write lock
         let mut counters = write_lock(&self.counters);
-        if let Some(existing) = counters.get(name) {
-            if existing.inner.description != description
-                || existing.inner.max_cardinality != max_cardinality
-            {
-                tracing::warn!(
-                    metric = name,
-                    "counter re-registered with different metadata; using original"
-                );
-            }
-            return existing.clone();
-        }
         counters
             .entry(name.to_string())
             .or_insert_with(|| Counter {
@@ -194,22 +190,18 @@ impl MetricsRegistry {
         {
             let gauges = read_lock(&self.gauges);
             if let Some(g) = gauges.get(name) {
+                if g.inner.description != description || g.inner.max_cardinality != max_cardinality
+                {
+                    tracing::warn!(
+                        metric = name,
+                        "gauge re-registered with different metadata; using original"
+                    );
+                }
                 return g.clone();
             }
         }
         // Slow path: write lock
         let mut gauges = write_lock(&self.gauges);
-        if let Some(existing) = gauges.get(name) {
-            if existing.inner.description != description
-                || existing.inner.max_cardinality != max_cardinality
-            {
-                tracing::warn!(
-                    metric = name,
-                    "gauge re-registered with different metadata; using original"
-                );
-            }
-            return existing.clone();
-        }
         gauges
             .entry(name.to_string())
             .or_insert_with(|| Gauge {
@@ -248,6 +240,14 @@ impl MetricsRegistry {
         {
             let histograms = read_lock(&self.histograms);
             if let Some(h) = histograms.get(name) {
+                // Quick boundary conflict check: compare length first to
+                // avoid sorting in the common case (same boundaries).
+                if h.inner.boundaries.len() != boundaries.len() {
+                    tracing::warn!(
+                        metric = name,
+                        "histogram re-registered with different boundaries; using original"
+                    );
+                }
                 return h.clone();
             }
         }
@@ -260,15 +260,6 @@ impl MetricsRegistry {
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
         sorted.dedup();
         let mut histograms = write_lock(&self.histograms);
-        if let Some(existing) = histograms.get(name) {
-            if existing.inner.boundaries != sorted {
-                tracing::warn!(
-                    metric = name,
-                    "histogram re-registered with different boundaries; using original"
-                );
-            }
-            return existing.clone();
-        }
         histograms
             .entry(name.to_string())
             .or_insert_with(|| Histogram {
