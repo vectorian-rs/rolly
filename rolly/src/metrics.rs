@@ -676,7 +676,9 @@ impl Histogram {
             return;
         }
         let exemplar = capture_exemplar(ExemplarValue::Double(value));
-        let bucket_idx = self.inner.boundaries.partition_point(|&b| b <= value);
+        // OTel explicit-bucket histograms use inclusive upper bounds:
+        // value exactly equal to a boundary stays in the lower bucket.
+        let bucket_idx = self.inner.boundaries.partition_point(|&b| b < value);
         let key = if attrs.is_empty() {
             0
         } else {
@@ -906,17 +908,17 @@ mod tests {
     fn histogram_boundary_placement() {
         let registry = MetricsRegistry::new();
         let h = registry.histogram("bp", "test", &[10.0, 20.0]);
-        // Exactly on boundary goes to the next bucket
-        h.observe(10.0, &[]);
-        h.observe(20.0, &[]);
-        h.observe(0.0, &[]);
+        // OTel inclusive upper bound: value exactly on boundary stays in lower bucket
+        h.observe(10.0, &[]); // bucket (-inf,10] = 1
+        h.observe(20.0, &[]); // bucket (10,20] = 1
+        h.observe(0.0, &[]); // bucket (-inf,10] = 2
 
         let snapshots = registry.collect();
         match &snapshots[0] {
             MetricSnapshot::Histogram { data_points, .. } => {
                 let dp = &data_points[0];
-                // [0,10) = 1 (0.0), [10,20) = 1 (10.0), [20,+inf) = 1 (20.0)
-                assert_eq!(dp.bucket_counts, vec![1, 1, 1]);
+                // (-inf,10] = 2 (0.0, 10.0), (10,20] = 1 (20.0), (20,+inf) = 0
+                assert_eq!(dp.bucket_counts, vec![2, 1, 0]);
             }
             _ => panic!("expected Histogram"),
         }

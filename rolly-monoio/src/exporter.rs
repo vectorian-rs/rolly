@@ -75,7 +75,15 @@ impl Exporter {
         validate_url("logs_url", config.logs_url.as_deref());
         validate_url("metrics_url", config.metrics_url.as_deref());
 
-        let (tx, rx) = crossbeam_channel::bounded(config.channel_capacity);
+        let channel_capacity = config.channel_capacity.max(1);
+        let flush_interval = if config.flush_interval.is_zero() {
+            eprintln!("rolly-monoio: flush_interval is zero, using 1s default");
+            Duration::from_secs(1)
+        } else {
+            config.flush_interval
+        };
+
+        let (tx, rx) = crossbeam_channel::bounded(channel_capacity);
         let (control_tx, control_rx) = crossbeam_channel::unbounded();
 
         let batch_config = BatchConfig {
@@ -90,7 +98,7 @@ impl Exporter {
             rx,
             control_rx,
             batch_config,
-            config.flush_interval,
+            flush_interval,
             config.max_concurrent_exports.max(1),
         ));
 

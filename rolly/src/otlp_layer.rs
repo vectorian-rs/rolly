@@ -382,12 +382,17 @@ where
         let mut visitor = FieldCollector::new();
         event.record(&mut visitor);
 
-        // Resolve parent: use the event's explicit parent if set,
-        // otherwise fall back to the current span on this thread.
-        let parent_span = event
-            .parent()
-            .and_then(|id| ctx.span(id))
-            .or_else(|| ctx.lookup_current());
+        // Resolve parent span for trace context:
+        // - Explicit parent (event!(parent: &span, ...)) → use that span
+        // - Root event (event!(parent: None, ...)) → no parent, detached
+        // - Contextual event (no parent specified) → current span on this thread
+        let parent_span = if event.is_root() {
+            None
+        } else if let Some(id) = event.parent() {
+            ctx.span(id)
+        } else {
+            ctx.lookup_current()
+        };
 
         let (trace_id, span_id, sampled) = parent_span
             .as_ref()

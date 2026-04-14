@@ -188,6 +188,25 @@ pub fn try_init_global(config: TelemetryConfig) -> Result<TelemetryGuard, InitEr
     let export_traces = config.otlp_traces_endpoint.is_some();
     let export_logs = config.otlp_logs_endpoint.is_some();
     let export_metrics = config.otlp_metrics_endpoint.is_some();
+
+    // Clamp zero intervals to safe defaults
+    #[allow(unused_variables)]
+    let use_metrics_interval = config.use_metrics_interval.and_then(|d| {
+        if d.is_zero() {
+            tracing::warn!("rolly: use_metrics_interval is zero, disabling");
+            None
+        } else {
+            Some(d)
+        }
+    });
+    let metrics_flush_interval = config.metrics_flush_interval.map(|d| {
+        if d.is_zero() {
+            tracing::warn!("rolly: metrics_flush_interval is zero, using 10s default");
+            Duration::from_secs(10)
+        } else {
+            d
+        }
+    });
     let background_shutdown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     let exporter = if export_traces || export_logs || export_metrics {
@@ -244,15 +263,13 @@ pub fn try_init_global(config: TelemetryConfig) -> Result<TelemetryGuard, InitEr
     );
 
     #[cfg(target_os = "linux")]
-    if let Some(interval) = config.use_metrics_interval {
+    if let Some(interval) = use_metrics_interval {
         spawn_use_metrics_loop_until_shutdown(interval, background_shutdown.clone());
     }
 
     // Spawn metrics aggregation loop
     let metrics_flush = if export_metrics {
-        let flush_interval = config
-            .metrics_flush_interval
-            .unwrap_or(Duration::from_secs(10));
+        let flush_interval = metrics_flush_interval.unwrap_or(Duration::from_secs(10));
         let metrics_config = MetricsExportConfig {
             service_name: config.service_name,
             service_version: config.service_version,
