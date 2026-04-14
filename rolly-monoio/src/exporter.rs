@@ -75,7 +75,12 @@ impl Exporter {
         validate_url("logs_url", config.logs_url.as_deref());
         validate_url("metrics_url", config.metrics_url.as_deref());
 
-        let channel_capacity = config.channel_capacity.max(1);
+        let channel_capacity = if config.channel_capacity == 0 {
+            eprintln!("rolly-monoio: channel_capacity is zero, using 1");
+            1
+        } else {
+            config.channel_capacity
+        };
         let flush_interval = if config.flush_interval.is_zero() {
             eprintln!("rolly-monoio: flush_interval is zero, using 1s default");
             Duration::from_secs(1)

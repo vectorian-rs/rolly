@@ -224,22 +224,21 @@ pub fn build_layer(
     };
 
     let sampling_rate = config.sampling_rate.clamp(0.0, 1.0);
-    let otlp_layer = if config.export_traces || config.export_logs {
-        Some(OtlpLayer::new(otlp_layer::OtlpLayerConfig {
-            sink,
-            service_name: &config.service_name,
-            service_version: &config.service_version,
-            environment: &config.environment,
-            resource_attributes: &config.resource_attributes,
-            export_traces: config.export_traces,
-            export_logs: config.export_logs,
-            sampling_rate,
-            scope_name: &config.scope_name,
-            scope_version: &config.scope_version,
-        }))
-    } else {
-        None
-    };
+    // Always install OtlpLayer so on_new_span populates SpanFields,
+    // which exemplar capture needs even in metrics-only setups.
+    // on_close/on_event check export_traces/export_logs and return early.
+    let otlp_layer = Some(OtlpLayer::new(otlp_layer::OtlpLayerConfig {
+        sink,
+        service_name: &config.service_name,
+        service_version: &config.service_version,
+        environment: &config.environment,
+        resource_attributes: &config.resource_attributes,
+        export_traces: config.export_traces,
+        export_logs: config.export_logs,
+        sampling_rate,
+        scope_name: &config.scope_name,
+        scope_version: &config.scope_version,
+    }));
 
     Layer::and_then(filtered_fmt, otlp_layer)
 }
