@@ -20,9 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Final metrics flush drains exporter channel first to avoid backpressure drop on shutdown
 
 ### Fixed
+- **Breaking:** Histogram bucket selection uses OTel inclusive-upper-bound semantics (`b < value` instead of `b <= value`) — values exactly on a boundary now stay in the lower bucket
+- `on_event` respects `event.is_root()` — events with `parent: None` no longer inherit the current span's trace context
 - `span.record()` no longer produces duplicate OTLP attributes when updating a field set at span creation
 - USE metrics now exported as OTLP metrics even when `export_logs` is disabled
 - `sysconf(-1)` no longer silently produces absurd CPU/memory values on Linux
+- Tokio: `channel_capacity=0` and `flush_interval=0` now return `StartError::InvalidConfig` instead of panicking
+- Monoio: zero `channel_capacity`, `flush_interval`, `use_metrics_interval`, `metrics_flush_interval` clamped to safe defaults with warning
+- Histogram re-registration: full boundary comparison (was length-only), plus description and cardinality checks
 
 ## [0.15.0] - 2026-04-13
 
